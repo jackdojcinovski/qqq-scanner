@@ -1,13 +1,23 @@
-"""Gates and the 100-point setup score.
+"""Gates, candidate setups and the 100-point score.
 
-`evaluate(history, cfg, ...)` looks at the market as of the last bar in
-`history` (1-minute bars from at least the prior session through now) and
-returns the best long or short setup, or the reason there isn't one.
+Two steps, shared by the live scanner and the backtest:
+
+1. `candidates(history, cfg)` finds every possible setup at the last bar:
+   each direction, each recent trigger (liquidity sweep or opening range
+   break) and each entry style. It records which components were present
+   but applies no preferences.
+2. `select(cands, cfg)` applies the configurable preferences (directions,
+   trend gate, required components, entry style...), scores what's left with
+   the config weights and returns the best.
+
+`evaluate()` = time/news/limit gates + both steps, for one moment in time.
+Because preferences and weights are applied in step 2, the backtest can try
+many variants on the same cached candidates.
 """
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
-from datetime import time
 from typing import Any
 
 import pandas as pd
@@ -18,24 +28,24 @@ from .config import parse_time
 from .levels import Level, build_levels
 from .news import NewsStatus
 
+ENTRY_MODES = ("mid", "near_edge")
+
 
 @dataclass
 class Component:
     name: str
-    points: int
-    max_points: int
+    key: str              # weights key used when present
+    max_key: str          # weights key for the maximum (differs for partial credit)
+    hit: bool
     detail: str
-
-    @property
-    def hit(self) -> bool:
-        return self.points > 0
+    points: int = 0
+    max_points: int = 0
 
 
 @dataclass
 class Setup:
     key: str                  # stable id so the same setup isn't alerted twice
     direction: str            # "long" / "short"
-    score: int
     entry: float
     stop: float
     target: float
@@ -43,8 +53,12 @@ class Setup:
     rr: float
     entry_zone: str
     time: pd.Timestamp
+    trigger: str = "sweep"    # "sweep" or "orb"
+    has_mss: bool = False
+    trend_ok: bool = False
+    entry_mode: str = "mid"
+    score: int = 0
     components: list[Component] = field(default_factory=list)
-    context: list[str] = field(default_factory=list)
 
     @property
     def risk(self) -> float:
@@ -57,11 +71,14 @@ class Setup:
             return "log"
         return "ignore"
 
+    def hit(self, name: str) -> bool:
+        return any(c.name == name and c.hit for c in self.components)
+
 
 @dataclass
 class Evaluation:
     setup: Setup | None
-    reason: str = ""          # why there's no setup (a failed gate)
+    reason: str = ""          # why there's no setup
 
 
 @dataclass
@@ -70,41 +87,99 @@ class DayState:
     losses_today: int = 0
 
 
+# ---------------------------------------------------------------------- public API
+
 def evaluate(history: pd.DataFrame, cfg: dict[str, Any],
              news: NewsStatus | None = None, day: DayState | None = None) -> Evaluation:
     day = day or DayState()
     news = news or NewsStatus(False)
-    now = history.index[-1]
-    w = cfg["window"]
-    start, end = parse_time(w["start"]), parse_time(w["end"])
+    reason = gate_reason(history.index[-1], cfg, news, day)
+    if reason:
+        return Evaluation(None, reason)
+    cands, rejects = candidates(history, cfg, (cfg["trade"].get("entry_at", "mid"),))
+    best, why = select(cands, cfg)
+    if best is None:
+        reasons = sorted(rejects | why) or ["no sweep or opening range break"]
+        return Evaluation(None, " / ".join(reasons))
+    return Evaluation(best)
 
-    # ---------------------------------------------------------------- gates
-    if not (start <= now.time() <= end):
-        return Evaluation(None, f"outside window {w['start']}-{w['end']}")
+
+def gate_reason(now: pd.Timestamp, cfg: dict[str, Any], news: NewsStatus, day: DayState) -> str:
+    w = cfg["window"]
+    if not (parse_time(w["start"]) <= now.time() <= parse_time(w["end"])):
+        return f"outside window {w['start']}-{w['end']}"
     if news.blocked:
-        return Evaluation(None, f"news: {news.reason}")
+        return f"news: {news.reason}"
     lim = cfg["limits"]
     if day.alerts_today >= lim["max_alerts_per_day"]:
-        return Evaluation(None, "daily alert limit reached")
+        return "daily alert limit reached"
     if day.losses_today >= lim["stop_after_losses"]:
-        return Evaluation(None, "stopped for the day after a loss")
+        return "stopped for the day after a loss"
+    return ""
 
+
+def candidates(history: pd.DataFrame, cfg: dict[str, Any],
+               entry_modes=ENTRY_MODES) -> tuple[list[Setup], set[str]]:
+    """Every structurally valid setup at the last bar, unscored."""
+    now = history.index[-1]
     rth = ind.regular_session(history, parse_time(cfg["session"]["open"]),
                               parse_time(cfg["session"]["close"]))
     session = rth[rth.index.date == now.date()]
     if len(session) < cfg["session"]["opening_range_minutes"]:
-        return Evaluation(None, "not enough session bars")
-
+        return [], {"not enough session bars"}
     ctx = _Context.build(history, session, cfg)
-    sides = cfg["trade"].get("directions", ["long", "short"])
-    candidates = [s for s in (_score_direction(ctx, d) for d in sides) if s]
-    if not candidates:
-        why = " / ".join(sorted(ctx.rejects)) or "no sweep or opening range break"
-        return Evaluation(None, why)
-    valid = [s for s in candidates if s.rr >= cfg["trade"]["min_rr"]]
-    if not valid:
-        return Evaluation(None, "reward to risk below minimum")
-    return Evaluation(max(valid, key=lambda s: s.score))
+    out: list[Setup] = []
+    for direction in ("long", "short"):
+        out += _direction_candidates(ctx, direction, entry_modes)
+    return out, ctx.rejects
+
+
+def select(cands: list[Setup], cfg: dict[str, Any]) -> tuple[Setup | None, set[str]]:
+    """Apply the config's preferences, score with its weights, return the best."""
+    t = cfg["trade"]
+    sides = t.get("directions", ["long", "short"])
+    mode = t.get("entry_at", "mid")
+    triggers = t.get("triggers", ["sweep", "orb"])
+    required = t.get("required_components", [])
+    why: set[str] = set()
+    best: Setup | None = None
+    for c in cands:
+        if c.entry_mode != mode:
+            continue
+        if c.direction not in sides:
+            why.add("direction not traded")
+            continue
+        if c.trigger not in triggers:
+            why.add(f"{c.trigger} trigger not traded")
+            continue
+        if c.trigger == "sweep" and not c.has_mss and t.get("require_mss_after_sweep", True):
+            why.add("sweep but no structure shift")
+            continue
+        if t.get("require_trend", False) and not c.trend_ok:
+            why.add("against the 5-min trend")
+            continue
+        missing = [n for n in required if not c.hit(n)]
+        if missing:
+            why.add(f"missing {missing[0]}")
+            continue
+        if c.rr < t["min_rr"]:
+            why.add("reward to risk below minimum")
+            continue
+        score = sum(cfg["weights"][x.key] for x in c.components if x.hit)
+        if best is None or score > best.score:
+            best = _scored(c, cfg)
+    return best, why
+
+
+def _scored(c: Setup, cfg: dict[str, Any]) -> Setup:
+    s = copy.copy(c)
+    W = cfg["weights"]
+    s.components = [copy.copy(x) for x in c.components]
+    for x in s.components:
+        x.points = W[x.key] if x.hit else 0
+        x.max_points = W[x.max_key]
+    s.score = sum(x.points for x in s.components)
+    return s
 
 
 # ---------------------------------------------------------------------- internals
@@ -163,16 +238,14 @@ def _last(series: pd.Series | None) -> float | None:
     return float(series.iloc[-1])
 
 
-def _score_direction(ctx: _Context, direction: str) -> Setup | None:
+def _direction_candidates(ctx: _Context, direction: str, entry_modes) -> list[Setup]:
     cfg, s = ctx.cfg, ctx.cfg["structure"]
-    W, T = cfg["weights"], cfg["thresholds"]
     bars = ctx.session
     last = len(bars) - 1
     close = float(bars["close"].iloc[-1])
     long = direction == "long"
     sign = 1 if long else -1
 
-    # ------------------------------------------------ trigger: recent sweep or ORB
     sweeps = [x for x in ctx.sweeps if x.direction == direction
               and last - x.idx <= s["trigger_lookback_bars"]]
 
@@ -181,29 +254,25 @@ def _score_direction(ctx: _Context, direction: str) -> Setup | None:
     if ctx.orange:
         edge = ctx.orange[0] if long else ctx.orange[1]
         closes = bars["close"].to_numpy()
-        beyond = [j for j in range(len(bars)) if sign * (closes[j] - edge) > 0
-                  and bars.index[j] >= bars.index[0] + pd.Timedelta(minutes=cfg["session"]["opening_range_minutes"])]
+        or_end = bars.index[0] + pd.Timedelta(minutes=cfg["session"]["opening_range_minutes"])
+        beyond = [j for j in range(len(bars)) if sign * (closes[j] - edge) > 0 and bars.index[j] >= or_end]
         orb_now = sign * (close - edge) > 0
         if beyond and orb_now:
             orb_idx = beyond[0]
     orb_recent = orb_idx is not None and last - orb_idx <= s["orb_break_lookback_bars"]
 
-    # score each recent sweep (and the ORB alone) and keep the best valid one
     triggers: list[st.Sweep | None] = list(sweeps) + ([None] if orb_recent else [])
     if not triggers:
         ctx.rejects.add("no sweep or opening range break")
-    best = None
+    out: list[Setup] = []
     for sweep in triggers:
-        cand = _score_trigger(ctx, direction, sweep, orb_idx, orb_now)
-        if cand and (best is None or cand.score > best.score):
-            best = cand
-    return best
+        out += _trigger_candidates(ctx, direction, sweep, orb_idx, orb_now, entry_modes)
+    return out
 
 
-def _score_trigger(ctx: _Context, direction: str, sweep: st.Sweep | None,
-                   orb_idx: int | None, orb_now: bool) -> Setup | None:
-    cfg, s = ctx.cfg, ctx.cfg["structure"]
-    W, T = cfg["weights"], cfg["thresholds"]
+def _trigger_candidates(ctx: _Context, direction: str, sweep: st.Sweep | None,
+                        orb_idx: int | None, orb_now: bool, entry_modes) -> list[Setup]:
+    cfg, s, T = ctx.cfg, ctx.cfg["structure"], ctx.cfg["thresholds"]
     bars = ctx.session
     close = float(bars["close"].iloc[-1])
     long = direction == "long"
@@ -213,125 +282,106 @@ def _score_trigger(ctx: _Context, direction: str, sweep: st.Sweep | None,
     # ------------------------------------------------ ICT structure
     mss = None
     if sweep:
-        comps.append(Component("Liquidity sweep", W["sweep"], W["sweep"],
+        comps.append(Component("Liquidity sweep", "sweep", "sweep", True,
                                f"swept {sweep.level_name} {sweep.level:.2f}, closed back inside"))
         mss = st.find_mss(bars, sweep, ctx.swings, ctx.atr, s["mss_max_bars"], s["mss_body_atr_mult"])
     else:
-        comps.append(Component("Liquidity sweep", 0, W["sweep"], "no sweep"))
-    if mss:
-        comps.append(Component("Structure shift", W["mss"], W["mss"],
-                               f"closed {'above' if long else 'below'} {mss.broken_level:.2f}, "
-                               f"displacement {mss.body_atr:.1f}x ATR"))
-    else:
-        if sweep and cfg["trade"].get("require_mss_after_sweep", True):
-            ctx.rejects.add("sweep but no structure shift")
-            return None
-        comps.append(Component("Structure shift", 0, W["mss"], "no displacement through structure"))
+        comps.append(Component("Liquidity sweep", "sweep", "sweep", False, "no sweep"))
+    comps.append(Component("Structure shift", "mss", "mss", mss is not None,
+                           f"closed {'above' if long else 'below'} {mss.broken_level:.2f}, "
+                           f"displacement {mss.body_atr:.1f}x ATR" if mss
+                           else "no displacement through structure"))
 
     anchor = sweep.idx if sweep else orb_idx
     zones = [g for g in ctx.gaps if g.direction == direction and g.active_from >= anchor
              and (g.bottom <= close if long else g.top >= close)]
-    zone = None
-    if zones:
-        zones.sort(key=lambda g: (g.kind == "IFVG", g.active_from))
-        zone = zones[-1]
-    if zone and zone.kind == "IFVG":
-        comps.append(Component("Entry zone", W["fvg_ifvg"], W["fvg_ifvg"],
-                               f"inverse FVG {zone.bottom:.2f}-{zone.top:.2f}"))
-    elif zone:
-        comps.append(Component("Entry zone", W["fvg_plain"], W["fvg_ifvg"],
-                               f"FVG {zone.bottom:.2f}-{zone.top:.2f}"))
-    else:
+    if not zones:
         # entry, stop and zone description all hang off the zone, so it's required
         ctx.rejects.add("trigger but no FVG to enter from")
-        return None
+        return []
+    zones.sort(key=lambda g: (g.kind == "IFVG", g.active_from))
+    zone = zones[-1]
+    if zone.kind == "IFVG":
+        comps.append(Component("Entry zone", "fvg_ifvg", "fvg_ifvg", True,
+                               f"inverse FVG {zone.bottom:.2f}-{zone.top:.2f}"))
+    else:
+        comps.append(Component("Entry zone", "fvg_plain", "fvg_ifvg", True,
+                               f"FVG {zone.bottom:.2f}-{zone.top:.2f}"))
 
     ob = st.find_order_block(bars, sweep, mss) if (sweep and mss) else None
-    if ob and zone and st.overlaps(ob.top, ob.bottom, zone.top, zone.bottom):
-        comps.append(Component("Order block", W["order_block"], W["order_block"],
-                               f"order block {ob.bottom:.2f}-{ob.top:.2f} overlaps entry"))
-    else:
-        comps.append(Component("Order block", 0, W["order_block"], "no overlapping order block"))
+    ob_hit = bool(ob and st.overlaps(ob.top, ob.bottom, zone.top, zone.bottom))
+    comps.append(Component("Order block", "order_block", "order_block", ob_hit,
+                           f"order block {ob.bottom:.2f}-{ob.top:.2f} overlaps entry" if ob_hit
+                           else "no overlapping order block"))
 
     # ------------------------------------------------ indicators
     vwap = float(ctx.vwap.iloc[-1])
-    side_ok = sign * (close - vwap) > 0
-    comps.append(Component("VWAP side", W["vwap_side"] if side_ok else 0, W["vwap_side"],
+    comps.append(Component("VWAP side", "vwap_side", "vwap_side", sign * (close - vwap) > 0,
                            f"{'above' if close > vwap else 'below'} VWAP {vwap:.2f}"))
-
-    comps.append(Component("Opening range break", W["orb_break"] if orb_now else 0, W["orb_break"],
+    comps.append(Component("Opening range break", "orb_break", "orb_break", orb_now,
                            f"beyond opening range {'high' if long else 'low'}" if orb_now
                            else "inside opening range"))
 
-    trend_ok = (ctx.ema_fast is not None and ctx.ema_slow is not None
-                and sign * (ctx.ema_fast - ctx.ema_slow) > 0)
-    if cfg["trade"].get("require_trend", False) and not trend_ok:
-        ctx.rejects.add("against the 5-min trend")
-        return None
-    if ctx.ema_fast is not None and ctx.ema_slow is not None:
-        comps.append(Component("EMA trend", W["ema_trend"] if trend_ok else 0, W["ema_trend"],
-                               f"5-min EMA {cfg['indicators']['ema_fast']} "
-                               f"{'>' if ctx.ema_fast > ctx.ema_slow else '<'} "
-                               f"EMA {cfg['indicators']['ema_slow']}"))
-    else:
-        comps.append(Component("EMA trend", 0, W["ema_trend"], "not enough 5-min bars"))
+    have_ema = ctx.ema_fast is not None and ctx.ema_slow is not None
+    trend_ok = have_ema and sign * (ctx.ema_fast - ctx.ema_slow) > 0
+    comps.append(Component("EMA trend", "ema_trend", "ema_trend", trend_ok,
+                           f"5-min EMA {cfg['indicators']['ema_fast']} "
+                           f"{'>' if ctx.ema_fast > ctx.ema_slow else '<'} "
+                           f"EMA {cfg['indicators']['ema_slow']}" if have_ema else "not enough 5-min bars"))
 
     trig = mss.idx if mss else (sweep.reclaim_idx if sweep else orb_idx)
     rv = ctx.relvol.iloc[trig]
-    rv_ok = pd.notna(rv) and rv >= T["rel_volume_min"]
-    comps.append(Component("Volume", W["rel_volume"] if rv_ok else 0, W["rel_volume"],
+    comps.append(Component("Volume", "rel_volume", "rel_volume",
+                           bool(pd.notna(rv) and rv >= T["rel_volume_min"]),
                            f"trigger volume {rv:.1f}x average" if pd.notna(rv) else "volume n/a"))
 
     if ctx.rsi5 is not None:
         rsi_ok = ctx.rsi5 < T["rsi_long_max"] if long else ctx.rsi5 > T["rsi_short_min"]
-        comps.append(Component("RSI", W["rsi_ok"] if rsi_ok else 0, W["rsi_ok"],
+        comps.append(Component("RSI", "rsi_ok", "rsi_ok", rsi_ok,
                                f"5-min RSI {ctx.rsi5:.0f}" + ("" if rsi_ok else " (stretched)")))
     else:
-        comps.append(Component("RSI", 0, W["rsi_ok"], "RSI n/a"))
+        comps.append(Component("RSI", "rsi_ok", "rsi_ok", False, "RSI n/a"))
 
-    # ------------------------------------------------ trade plan
+    now_t = bars.index[-1].time()
+    w = cfg["window"]
+    prime = parse_time(w["prime_start"]) <= now_t <= parse_time(w["prime_end"])
+    late = now_t > parse_time(w["prime_end"])
+    timing = Component("Timing", "timing_prime" if prime or not late else "timing_late", "timing_prime",
+                       prime or late, f"{bars.index[-1]:%H:%M} ET")
+
+    # ------------------------------------------------ trade plans, one per entry style
     t = cfg["trade"]
     buf = t["stop_buffer_pct"]
-    if cfg["trade"].get("entry_at", "mid") == "near_edge":
-        entry = zone.top if long else zone.bottom
-    else:
-        entry = zone.mid
-    entry = min(entry, close) if long else max(entry, close)
-    # stop goes beyond the sweep wick (or opening range) AND the entry zone's far edge,
-    # so a normal fill into the zone can't stop the trade out
-    if sweep:
-        anchor_px = sweep.extreme
-    else:
-        anchor_px = ctx.orange[1] if long else ctx.orange[0]
+    anchor_px = sweep.extreme if sweep else (ctx.orange[1] if long else ctx.orange[0])
     far_edge = zone.bottom if long else zone.top
     anchor_px = min(anchor_px, far_edge) if long else max(anchor_px, far_edge)
     stop = anchor_px * (1 - buf) if long else anchor_px * (1 + buf)
-    risk = sign * (entry - stop)
-    if risk <= 0 or sign * (close - stop) <= 0:
-        ctx.rejects.add("price already through the stop")
-        return None
-
-    beyond = sorted((l for l in ctx.levels if sign * (l.price - entry) >= t["min_rr"] * risk),
-                    key=lambda l: abs(l.price - entry))
-    if beyond:
-        target, target_name = beyond[0].price, beyond[0].name
-    else:
-        target, target_name = entry + sign * t["default_rr"] * risk, f"{t['default_rr']:g}R"
-    rr = abs(target - entry) / risk
-    comps.append(Component("Reward to risk", W["rr"] if rr >= T["rr_points_min"] else 0, W["rr"],
-                           f"R:R {rr:.1f}"))
-
-    prime = parse_time(cfg["window"]["prime_start"]) <= bars.index[-1].time() <= parse_time(cfg["window"]["prime_end"])
-    late = bars.index[-1].time() > parse_time(cfg["window"]["prime_end"])
-    tp = W["timing_prime"] if prime else (W["timing_late"] if late else 0)
-    comps.append(Component("Timing", tp, W["timing_prime"], f"{bars.index[-1]:%H:%M} ET"))
-
     trigger_idx = sweep.idx if sweep else orb_idx
     key = f"{bars.index[-1]:%Y-%m-%d}-{direction}-{bars.index[trigger_idx]:%H%M}"
-    zone_desc = f"{zone.kind} {'near edge' if cfg['trade'].get('entry_at') == 'near_edge' else 'midpoint'}"
-    return Setup(
-        key=key, direction=direction, score=sum(c.points for c in comps),
-        entry=round(entry, 2), stop=round(stop, 2), target=round(target, 2),
-        target_name=target_name, rr=round(rr, 2), entry_zone=zone_desc,
-        time=bars.index[-1], components=comps,
-    )
+
+    out = []
+    for mode in entry_modes:
+        entry = (zone.top if long else zone.bottom) if mode == "near_edge" else zone.mid
+        entry = min(entry, close) if long else max(entry, close)
+        risk = sign * (entry - stop)
+        if risk <= 0 or sign * (close - stop) <= 0:
+            ctx.rejects.add("price already through the stop")
+            continue
+        beyond = sorted((l for l in ctx.levels if sign * (l.price - entry) >= t["min_rr"] * risk),
+                        key=lambda l: abs(l.price - entry))
+        if beyond:
+            target, target_name = beyond[0].price, beyond[0].name
+        else:
+            target, target_name = entry + sign * t["default_rr"] * risk, f"{t['default_rr']:g}R"
+        rr = abs(target - entry) / risk
+        rr_c = Component("Reward to risk", "rr", "rr", rr >= T["rr_points_min"], f"R:R {rr:.1f}")
+        out.append(Setup(
+            key=key, direction=direction,
+            entry=round(entry, 2), stop=round(stop, 2), target=round(target, 2),
+            target_name=target_name, rr=round(rr, 2),
+            entry_zone=f"{zone.kind} {'near edge' if mode == 'near_edge' else 'midpoint'}",
+            time=bars.index[-1], trigger="sweep" if sweep else "orb", has_mss=mss is not None,
+            trend_ok=trend_ok, entry_mode=mode,
+            components=[copy.copy(c) for c in comps] + [rr_c, copy.copy(timing)],
+        ))
+    return out

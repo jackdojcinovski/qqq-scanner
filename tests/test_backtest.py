@@ -107,3 +107,58 @@ def test_history_round_trip(tmp_path):
     assert len(back) == 20 and str(back.index.tz) == "America/New_York"
     assert trading_days(back) == [date(2026, 9, 30), date(2026, 10, 1)]
     assert len(load_history("QQQ", date(2026, 10, 1), date(2026, 10, 1), tmp_path)) == 10
+
+
+def _cfg(**exit_kw):
+    import copy
+    c = copy.deepcopy(CFG)
+    c["exit"].update(exit_kw)
+    return c
+
+
+def test_partial_then_target():
+    # fill 100, risk 1: +1R partial at 101 (half), then target 102 on the rest
+    rows = [candle(100.5, 100.0, low=99.9), candle(100.0, 101.1, high=101.2), candle(101.1, 102.1, high=102.2)]
+    r = bt.simulate(long_setup(), after(rows), _cfg(mode="partial"))
+    assert r.outcome == "target" and r.r == pytest.approx(0.5 * 1 + 0.5 * 2)
+
+
+def test_partial_then_breakeven():
+    rows = [candle(100.5, 100.0, low=99.9), candle(100.0, 101.1, high=101.2), candle(101.0, 99.95, low=99.9)]
+    r = bt.simulate(long_setup(), after(rows), _cfg(mode="partial"))
+    assert r.outcome == "breakeven" and r.r == pytest.approx(0.5)
+
+
+def test_partial_not_reached_is_full_loss():
+    rows = [candle(100.5, 100.0, low=99.9), candle(100.0, 100.6, high=100.7), candle(100.5, 98.9, low=98.8)]
+    r = bt.simulate(long_setup(), after(rows), _cfg(mode="partial"))
+    assert r.outcome == "stop" and r.r == pytest.approx(-1.0)
+
+
+def test_trail_rides_past_target_and_locks_profit():
+    # no fixed target in trail mode: runs to 104, trail 1R behind -> exits at 103
+    rows = [candle(100.5, 100.0, low=99.9), candle(100.0, 101.5, high=101.6), candle(101.5, 102.5, high=102.6),
+            candle(102.5, 103.9, high=104.0), candle(103.9, 102.8, low=102.7)]
+    r = bt.simulate(long_setup(), after(rows), _cfg(mode="trail"))
+    assert r.outcome == "trail" and r.r == pytest.approx(3.0)
+    assert r.mfe_r == pytest.approx(4.0)
+
+
+def test_trail_breakeven_floor():
+    rows = [candle(100.5, 100.0, low=99.9), candle(100.0, 101.0, high=101.0), candle(100.9, 99.5, low=99.4)]
+    r = bt.simulate(long_setup(), after(rows), _cfg(mode="trail"))
+    assert r.outcome == "breakeven" and r.r == pytest.approx(0.0)
+
+
+def test_short_side_mirror():
+    s = Setup(key="k", direction="short", entry=100.0, stop=101.0, target=98.0, target_name="t",
+              rr=2.0, entry_zone="FVG", time=T0)
+    rows = [candle(99.5, 100.0, high=100.1), candle(100.0, 98.9, low=98.8), candle(98.9, 97.9, low=97.8)]
+    assert bt.simulate(s, after(rows), _cfg(mode="partial")).r == pytest.approx(1.5)
+    assert bt.simulate(s, after(rows), CFG).r == pytest.approx(2.0)
+
+
+def test_bootstrap_ci_contains_mean():
+    vals = [1.0, -1.0, 2.0, -1.0, 0.5] * 10
+    lo, hi = bt.bootstrap_ci(vals)
+    assert lo < sum(vals) / len(vals) < hi

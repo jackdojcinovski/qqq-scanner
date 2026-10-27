@@ -21,6 +21,9 @@ Watches QQQ on 1-minute bars, scores ICT + indicator setups out of 100, and
 | `tools/download_history.py` | Downloads history from Alpaca |
 | `tools/backtest.py` | Runs the backtest and prints the report |
 | `tools/compare.py` | Runs config variants side by side on one period |
+| `scanner/research.py` | Candidate cache, variant grid, option cost model, ranking |
+| `tools/research.py` | Full research run: 192 variants, tune/check, writes `reports/` |
+| `scanner/options.py` + `tools/option_check.py` | Replays trades with real option prices |
 | `check_setup.py` | Phase 1 connection check |
 
 ## Commands (PowerShell, inside the project with `.venv` active)
@@ -36,6 +39,19 @@ python tools/backtest.py --split 2025-10-27       # tune period vs check period
 python tools/compare.py                           # config variants side by side (tune period)
 python tools/compare.py --period check --only D   # confirm the chosen one, once
 ```
+
+### Research workflow
+
+```powershell
+python tools/download_history.py --symbols QQQ,SPY --start 2019-01-01
+python tools/research.py                 # ~10-15 min first time, ~1 min after (cached)
+git add reports; git commit -m "research results"; git push
+python tools/option_check.py --variant "<winner from the report>"
+```
+
+`research.py` ranks every variant on the tune period (everything before the
+last 12 months) by the 90% lower bound of average R after estimated option
+costs, then tests only the top 3 on the untouched last 12 months.
 
 The backtest saves every setup to `data/backtest/trades_*.csv` (opens in
 Excel). Results are in R on the QQQ share price; option P&L will differ.

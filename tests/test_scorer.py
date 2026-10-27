@@ -77,14 +77,37 @@ def test_replay_respects_daily_alert_limit():
 
 
 def test_stop_sits_beyond_entry_zone_and_sweep():
-    from scanner.scorer import _Context, _score_direction
-    from scanner import indicators as ind
-    hist = bullish_sweep_day()
-    rth = ind.regular_session(hist)
-    sess = rth[rth.index.date == hist.index[-1].date()]
-    s = _score_direction(_Context.build(hist, sess, CFG), "long")
+    s = evaluate(bullish_sweep_day(), CFG).setup
     zone_bottom = 499.6
     assert s.stop < min(498.85, zone_bottom)
+
+
+def test_reweighting_changes_score_without_new_candidates():
+    import copy
+    from scanner.scorer import candidates, select
+    hist = bullish_sweep_day()
+    cands, _ = candidates(hist, CFG)
+    base, _ = select(cands, CFG)
+    cfg = copy.deepcopy(CFG)
+    cfg["weights"]["order_block"] = 0
+    cfg["weights"]["orb_break"] = 15
+    alt, _ = select(cands, cfg)
+    assert alt.key == base.key and alt.score == base.score   # OB and ORB both hit: 5 moved
+    cfg["weights"]["vwap_side"] = 0
+    assert select(cands, cfg)[0].score == base.score - 15
+
+
+def test_required_components_and_trigger_filter():
+    import copy
+    from scanner.scorer import candidates, select
+    cands, _ = candidates(bullish_sweep_day(), CFG)
+    cfg = copy.deepcopy(CFG)
+    cfg["trade"]["required_components"] = ["Volume", "Order block"]
+    assert select(cands, cfg)[0] is not None
+    cfg["trade"]["triggers"] = ["orb"]
+    best, why = select(cands, cfg)
+    assert best is None or best.trigger == "orb"
+    assert best is not None or "sweep trigger not traded" in why
 
 
 def test_trend_gate_direction_filter_and_near_edge_entry():

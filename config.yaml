@@ -44,7 +44,14 @@ trade:
   min_rr: 1.5                     # gate: first target must be at least this
   default_rr: 2.0                 # fixed target when no key level fits
   entry_valid_minutes: 15
+
+exit:
+  mode: fixed                     # fixed | partial | trail
   time_exit_minutes: 60
+  partial_at_r: 1.0               # partial: take some off here...
+  partial_fraction: 0.5           # ...this much, then stop to breakeven
+  trail_after_r: 1.0              # trail: start trailing once this far in profit
+  trail_distance_r: 1.0           # trail this far behind the best price
 
 limits:
   max_alerts_per_day: 2
