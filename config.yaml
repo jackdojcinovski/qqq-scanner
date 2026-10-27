@@ -36,8 +36,10 @@ structure:
   orb_break_lookback_bars: 15
 
 trade:
-  require_entry_zone: true        # no FVG/IFVG to enter from = no setup (no chasing)
   require_mss_after_sweep: true   # a sweep only counts once structure shifts with displacement
+  require_trend: false            # only trade with the 5-min EMA 9/20 trend
+  directions: [long, short]       # which sides to trade
+  entry_at: mid                   # mid = zone midpoint, near_edge = first edge price reaches
   stop_buffer_pct: 0.0002
   min_rr: 1.5                     # gate: first target must be at least this
   default_rr: 2.0                 # fixed target when no key level fits

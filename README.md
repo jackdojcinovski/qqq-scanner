@@ -20,6 +20,7 @@ Watches QQQ on 1-minute bars, scores ICT + indicator setups out of 100, and
 | `scanner/backtest.py` | Trade simulator, live-rule day runner, statistics |
 | `tools/download_history.py` | Downloads history from Alpaca |
 | `tools/backtest.py` | Runs the backtest and prints the report |
+| `tools/compare.py` | Runs config variants side by side on one period |
 | `check_setup.py` | Phase 1 connection check |
 
 ## Commands (PowerShell, inside the project with `.venv` active)
@@ -31,7 +32,9 @@ python tools/replay_day.py 2026-10-26             # alerts the scanner would hav
 python tools/replay_day.py 2026-10-26 --show-all  # plus near misses (60-74)
 
 python tools/download_history.py                  # ~2 years of QQQ 1-min bars (once)
-python tools/backtest.py --split 2025-11-01       # tune period vs check period
+python tools/backtest.py --split 2025-10-27       # tune period vs check period
+python tools/compare.py                           # config variants side by side (tune period)
+python tools/compare.py --period check --only D   # confirm the chosen one, once
 ```
 
 The backtest saves every setup to `data/backtest/trades_*.csv` (opens in

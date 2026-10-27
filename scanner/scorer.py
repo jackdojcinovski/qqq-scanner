@@ -96,7 +96,8 @@ def evaluate(history: pd.DataFrame, cfg: dict[str, Any],
         return Evaluation(None, "not enough session bars")
 
     ctx = _Context.build(history, session, cfg)
-    candidates = [s for s in (_score_direction(ctx, d) for d in ("long", "short")) if s]
+    sides = cfg["trade"].get("directions", ["long", "short"])
+    candidates = [s for s in (_score_direction(ctx, d) for d in sides) if s]
     if not candidates:
         why = " / ".join(sorted(ctx.rejects)) or "no sweep or opening range break"
         return Evaluation(None, why)
@@ -241,10 +242,9 @@ def _score_trigger(ctx: _Context, direction: str, sweep: st.Sweep | None,
         comps.append(Component("Entry zone", W["fvg_plain"], W["fvg_ifvg"],
                                f"FVG {zone.bottom:.2f}-{zone.top:.2f}"))
     else:
-        if cfg["trade"].get("require_entry_zone", True):
-            ctx.rejects.add("trigger but no FVG to enter from")
-            return None
-        comps.append(Component("Entry zone", 0, W["fvg_ifvg"], "no FVG to enter from"))
+        # entry, stop and zone description all hang off the zone, so it's required
+        ctx.rejects.add("trigger but no FVG to enter from")
+        return None
 
     ob = st.find_order_block(bars, sweep, mss) if (sweep and mss) else None
     if ob and zone and st.overlaps(ob.top, ob.bottom, zone.top, zone.bottom):
@@ -263,8 +263,12 @@ def _score_trigger(ctx: _Context, direction: str, sweep: st.Sweep | None,
                            f"beyond opening range {'high' if long else 'low'}" if orb_now
                            else "inside opening range"))
 
+    trend_ok = (ctx.ema_fast is not None and ctx.ema_slow is not None
+                and sign * (ctx.ema_fast - ctx.ema_slow) > 0)
+    if cfg["trade"].get("require_trend", False) and not trend_ok:
+        ctx.rejects.add("against the 5-min trend")
+        return None
     if ctx.ema_fast is not None and ctx.ema_slow is not None:
-        trend_ok = sign * (ctx.ema_fast - ctx.ema_slow) > 0
         comps.append(Component("EMA trend", W["ema_trend"] if trend_ok else 0, W["ema_trend"],
                                f"5-min EMA {cfg['indicators']['ema_fast']} "
                                f"{'>' if ctx.ema_fast > ctx.ema_slow else '<'} "
@@ -288,7 +292,10 @@ def _score_trigger(ctx: _Context, direction: str, sweep: st.Sweep | None,
     # ------------------------------------------------ trade plan
     t = cfg["trade"]
     buf = t["stop_buffer_pct"]
-    entry = zone.mid if zone else close
+    if cfg["trade"].get("entry_at", "mid") == "near_edge":
+        entry = zone.top if long else zone.bottom
+    else:
+        entry = zone.mid
     entry = min(entry, close) if long else max(entry, close)
     # stop goes beyond the sweep wick (or opening range) AND the entry zone's far edge,
     # so a normal fill into the zone can't stop the trade out
@@ -321,7 +328,7 @@ def _score_trigger(ctx: _Context, direction: str, sweep: st.Sweep | None,
 
     trigger_idx = sweep.idx if sweep else orb_idx
     key = f"{bars.index[-1]:%Y-%m-%d}-{direction}-{bars.index[trigger_idx]:%H%M}"
-    zone_desc = (f"{zone.kind} midpoint" if zone else "market")
+    zone_desc = f"{zone.kind} {'near edge' if cfg['trade'].get('entry_at') == 'near_edge' else 'midpoint'}"
     return Setup(
         key=key, direction=direction, score=sum(c.points for c in comps),
         entry=round(entry, 2), stop=round(stop, 2), target=round(target, 2),

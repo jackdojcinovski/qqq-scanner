@@ -85,3 +85,17 @@ def test_stop_sits_beyond_entry_zone_and_sweep():
     s = _score_direction(_Context.build(hist, sess, CFG), "long")
     zone_bottom = 499.6
     assert s.stop < min(498.85, zone_bottom)
+
+
+def test_trend_gate_direction_filter_and_near_edge_entry():
+    import copy
+    hist = bullish_sweep_day()
+    cfg = copy.deepcopy(CFG)
+    cfg["trade"]["entry_at"] = "near_edge"
+    s = evaluate(hist, cfg).setup
+    assert s.entry == pytest.approx(500.0) and "near edge" in s.entry_zone   # FVG top for a long
+    cfg["trade"]["directions"] = ["short"]
+    assert evaluate(hist, cfg).setup is None
+    cfg2 = copy.deepcopy(CFG)
+    cfg2["trade"]["require_trend"] = True
+    assert evaluate(hist, cfg2).setup.direction == "long"     # this day's 5-min trend is up
