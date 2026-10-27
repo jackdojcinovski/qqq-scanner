@@ -1,0 +1,8 @@
+# Days with no alerts at all, on top of the Forex Factory calendar.
+# Use it for big QQQ earnings (NVDA, AAPL, MSFT, AMZN, GOOGL, META) or
+# anything else you want to sit out. Format: YYYY-MM-DD: reason
+#
+# Example:
+# 2026-11-19: NVDA earnings after close (day after)
+
+dates: {}

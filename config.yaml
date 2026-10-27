@@ -1,0 +1,91 @@
+# QQQ scanner settings. Every threshold and weight lives here so the
+# backtest can tune them without touching code.
+
+symbol: QQQ
+timezone: America/New_York
+
+session:
+  open: "09:30"
+  close: "16:00"
+  premarket_start: "04:00"
+  opening_range_minutes: 5        # 9:30-9:35 range
+
+window:                           # when setups may be scored
+  start: "09:35"
+  end: "11:30"
+  prime_start: "09:45"            # full timing points
+  prime_end: "11:00"              # reduced timing points until window end
+
+indicators:
+  ema_fast: 9
+  ema_slow: 20
+  rsi_period: 14
+  atr_period: 14
+  rel_volume_period: 20
+
+structure:
+  swing_strength: 2               # bars on each side of a swing point
+  sweep_pierce_pct: 0.0002        # 0.02% beyond the level
+  sweep_reclaim_bars: 2           # close back inside within this many bars
+  trigger_lookback_bars: 30       # how recent a sweep must be
+  mss_max_bars: 15                # structure shift must follow the sweep within this
+  mss_body_atr_mult: 1.5          # displacement candle body vs ATR(14)
+  fvg_min_atr_mult: 0.25          # minimum gap size vs ATR
+  fvg_expiry_bars: 60
+  equal_level_pct: 0.0002         # two swings this close = equal highs/lows
+  orb_break_lookback_bars: 15
+
+trade:
+  require_entry_zone: true        # no FVG/IFVG to enter from = no setup (no chasing)
+  require_mss_after_sweep: true   # a sweep only counts once structure shifts with displacement
+  stop_buffer_pct: 0.0002
+  min_rr: 1.5                     # gate: first target must be at least this
+  default_rr: 2.0                 # fixed target when no key level fits
+  entry_valid_minutes: 15
+  time_exit_minutes: 60
+
+limits:
+  max_alerts_per_day: 2
+  stop_after_losses: 1
+
+weights:                          # must total 100
+  vwap_side: 15
+  orb_break: 10
+  ema_trend: 10
+  rel_volume: 5
+  sweep: 15
+  mss: 15
+  fvg_ifvg: 10                    # IFVG gets full points
+  fvg_plain: 7                    # plain FVG
+  order_block: 5
+  rsi_ok: 5
+  rr: 5
+  timing_prime: 5
+  timing_late: 2
+
+thresholds:
+  rel_volume_min: 1.5
+  rsi_long_max: 70
+  rsi_short_min: 30
+  rr_points_min: 2.0
+  alert_score: 75
+  log_score: 60
+
+news:
+  feed_url: https://nfs.faireconomy.media/ff_calendar_thisweek.json
+  cache_file: data/ff_calendar_thisweek.json
+  blackout_file: blackout.yaml
+  currency: USD
+  impact: High
+  fail_closed: true               # block alerts if no calendar is available
+  full_day_keywords:              # any red USD event matching these blocks the day
+    - Federal Funds Rate
+    - FOMC Statement
+    - CPI m/m
+    - CPI y/y
+    - Core CPI
+    - Non-Farm Employment Change
+  late_start_until: "10:00"       # red event before the open delays alerts
+  window_before_minutes: 15
+  window_after_minutes: 30
+  warn_minutes: 15
