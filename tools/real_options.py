@@ -156,10 +156,14 @@ def main() -> None:
         for r in rows:
             L.append(f"| {r['day']} | {r['symbol']} | {r['side']} | {r['option']} | {r['paid']:.2f} | {r['got']:.2f} "
                      f"| {r['why']} | ${r['real']:+,.0f} | ${r['model']:+,.0f} |")
+        ratio = statistics.median(r["paid"] / r["model_paid"] for r in rows)
+        L.append(f"\n**Calibration:** real contracts cost {ratio:.2f}x what the model charged. "
+                 f"Re-run the money study with `--iv-mult {args.iv_mult * ratio:.2f}` to match real prices.")
         verdict = "real prices CONFIRM a profit." if sum(real) > 0 else "real prices do NOT show a profit."
         L.append(f"\n**Verdict:** {verdict} Real total ${sum(real):+,.0f} vs model ${sum(mod):+,.0f} "
                  f"on the same {len(rows)} trades.")
-    out = ROOT / "reports" / f"real_options_{args.setup}_{args.rule}_{args.dte}dte.md"
+    tp_tag = "hold" if args.tp is None else f"tp{args.tp * 100:g}"
+    out = ROOT / "reports" / f"real_options_{args.setup}_{args.rule}_{args.dte}dte_{tp_tag}.md"
     out.parent.mkdir(exist_ok=True)
     out.write_text("\n".join(L) + "\n", encoding="utf-8")
     print("\n".join(L[4:16]))
