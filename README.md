@@ -24,6 +24,7 @@ Watches QQQ on 1-minute bars, scores ICT + indicator setups out of 100, and
 | `scanner/research.py` | Candidate cache, variant grid, option cost model, ranking |
 | `tools/research.py` | Full research run: 192 variants, tune/check, writes `reports/` |
 | `scanner/options.py` + `tools/option_check.py` | Replays trades with real option prices |
+| `scanner/quant.py` + `tools/quant_grade.py` | 8 quantitative signs known by 9:35; grades trades, keeps the top 25%, max 1/day |
 | `scanner/live.py` | Live scanner: same rules as the backtest, plus news; tracks trades |
 | `scanner/discord.py` | Discord webhook and message formats |
 | `scanner/feeds.py` | Alpaca history, live bars, market calendar, option quotes |
