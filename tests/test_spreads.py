@@ -68,3 +68,11 @@ def test_condor_legs():
     legs = sp.legs_for("condor", 600.0, 0.005, 1)
     assert [(l.right, l.strike, l.short) for l in legs] == [("P", 597, True), ("P", 596, False),
                                                             ("C", 603, True), ("C", 604, False)]
+
+
+def test_rejects_impossible_credit():
+    S = np.full(390, 600.0)
+    legs = sp.legs_for("put", 600.0, 0.005, 1)          # $1 wide: a $0.95 credit can't be real
+    ch = sp.load_chain(chain_df({("P", 597): [(m, 1.20) for m in range(60)],
+                                 ("P", 596): [(m, 0.20) for m in range(60)]}), DAY, ET)
+    assert sp.replay(ch, S, legs, 30, 1, None, None) is None

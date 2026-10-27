@@ -47,6 +47,7 @@ DISTS = [0.002, 0.004, 0.006, 0.008, 0.012]
 WIDTHS = [1, 2, 3]
 TPS = [0.5, 0.75, None]
 SLS = [1.0, 2.0, None]          # stop when buy-back >= credit x (1 + sl): 2x / 3x the credit
+MAX_SPREADS = 50                # never size above this many spreads
 
 
 def structure_for(rule: str, g: ix.DayGrid, i: int, m: int, down: bool) -> str | None:
@@ -169,7 +170,7 @@ def main() -> None:
                 j, why = sp.exit_on(credit, cost, tp, sl)
                 per = (credit - float(cost[j])) * 100
                 max_loss = max(width - credit, 0.01) * 100
-                k = max(1, int(args.budget // max_loss))
+                k = min(MAX_SPREADS, max(1, int(args.budget // max_loss)))
                 pnl[cfg].append((d, per * k, s, why))
                 done_cfg.add(cfg)
         if n % 25 == 0 or n == len(have):
@@ -213,13 +214,17 @@ def main() -> None:
         L.append(f"| {rule} | {len(cs)} | ${np.mean(tw):+,.0f} | {np.mean([x > 0 for x in tw]):.0%} "
                  f"| ${np.mean(cw):+,.0f} | {np.mean([x > 0 for x in cw]):.0%} |")
 
-    L += ["\n## By short-strike distance and entry time (best rule/width/exit for each cell, tune $ per week)\n",
+    L += ["\n## By short-strike distance and entry time (best setting per cell on tune: tune $/week -> check $/week)\n",
           "| entry | " + " | ".join(f"{x:.1%} OTM" for x in DISTS) + " |", "|---|" + "---|" * len(DISTS)]
     for m in TIMES:
         cells = []
         for dist in DISTS:
             cs = [c for c in ok if c[1] == m and c[2] == dist]
-            cells.append(f"${max(tune[c]['usd_wk'] for c in cs):+,.0f}" if cs else "-")
+            if cs:
+                b = max(cs, key=lambda c: tune[c]["usd_wk"])
+                cells.append(f"${tune[b]['usd_wk']:+,.0f} -> ${summ(b, cset)['usd_wk']:+,.0f}")
+            else:
+                cells.append("-")
         L.append(f"| {TIMES[m]} | " + " | ".join(cells) + " |")
 
     if ranked:

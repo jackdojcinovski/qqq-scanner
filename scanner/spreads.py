@@ -24,6 +24,7 @@ import pandas as pd
 MINUTES = 390
 EXIT_BAR = 380            # 15:50
 MAX_AGE = 15              # minutes since a leg's last trade, at entry
+MAX_CREDIT_FRAC = 0.8     # reject credits above 80% of the width (bad / stale prints)
 
 
 @dataclass
@@ -112,8 +113,8 @@ def prepare(chain: Chain, S: np.ndarray, legs: list[Leg], m: int, width: float, 
     sign = np.array([1.0 if lg.short else -1.0 for lg in legs])
     px = np.vstack([chain.price[(lg.right, float(lg.strike))] for lg in legs])          # legs x minutes
     credit = float(np.sum(sign * px[:, m - 1]) - slip * len(legs))
-    if credit < min_credit:
-        return None
+    if credit < min_credit or credit > MAX_CREDIT_FRAC * width:
+        return None            # a credit near the width is impossible in a real market: stale / bad prints
     intr = np.vstack([_intrinsic(lg, S) for lg in legs])
     window = slice(m, exit_bar + 1)
     mark = np.nansum(sign[:, None] * px[:, window], axis=0)
