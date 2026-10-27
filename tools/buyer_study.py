@@ -12,7 +12,7 @@ Ways to buy (scanner/debit.py), all real traded option prices:
 Cheap-option filter: the at-the-money straddle at entry (what the market charges
 for the rest of today's move) vs how much QQQ/SPY actually moved over the same
 part of the day on the previous 10 days. 'cheap' = below the median (set on tune).
-Exits: take profit +50% / +100% / hold, stop -50% / none, time stop 12:00 / 13:30 / none
+Exits: take profit +25% / +50% / +100% / hold, stop -25% / -50% / none, max hold 15 / 30 / 60 minutes or none
 (else sold at 15:50). About --budget $ per trade. $0 commission, no FX.
 
 Choices on the TUNE period; the last 12 months (CHECK) looked at once.
@@ -41,9 +41,9 @@ from scanner.history import ET, load_history  # noqa: E402
 
 OPT_DIR = ROOT / "data" / "options"
 MODES = ["both", "long"]
-TPS = [0.5, 1.0, None]
-SLS = [0.5, None]
-TIME = {None: "none", 150: "12:00", 240: "13:30"}
+TPS = [0.25, 0.5, 1.0, None]
+SLS = [0.25, 0.5, None]
+TIME = {15: "15 min", 30: "30 min", 60: "60 min", None: "to 15:50"}   # max minutes held
 FILTERS = ["all", "cheap", "dear"]
 
 
@@ -60,7 +60,8 @@ def stats(rows, n_days: int) -> dict:
     weeks = max(n_days / 5, 1)
     p = np.array([r[1] for r in rows], float)
     if len(p) == 0:
-        return dict(n=0, wk=0.0, win=0.0, aw=0.0, al=0.0, per=0.0, usd_wk=0.0, total=0.0, lo=-1e9, dd=0.0, years="0/0")
+        return dict(n=0, wk=0.0, win=0.0, aw=0.0, al=0.0, per=0.0, usd_wk=0.0, total=0.0, lo=-1e9, dd=0.0, years="0/0",
+                    hold=0.0)
     eq = np.concatenate([[0], np.cumsum(p)])
     yrs: dict = {}
     for r, x in zip(rows, p):
@@ -72,7 +73,8 @@ def stats(rows, n_days: int) -> dict:
                 per=float(p.mean()), usd_wk=float(p.sum() / weeks), total=float(p.sum()),
                 lo=float(p.mean() - 1.645 * sd / math.sqrt(len(p))) if len(p) > 1 else -1e9,
                 dd=float((np.maximum.accumulate(eq) - eq).max()),
-                years=f"{sum(v > 0 for v in yrs.values())}/{len(yrs)}")
+                years=f"{sum(v > 0 for v in yrs.values())}/{len(yrs)}",
+                hold=float(np.mean([r[3] for r in rows])))
 
 
 def name(c) -> str:
@@ -81,15 +83,15 @@ def name(c) -> str:
             f"{'none' if sl is None else f'-{sl:.0%}'} | {TIME[tb]}")
 
 
-HEAD = ("| setup | sides | how bought | filter | take profit | stop | time stop | trades | per week | win | avg win "
-        "| avg loss | $ per trade | **$ per week** | total | worst drawdown | years + |")
-SEP = "|" + "---|" * 17
+HEAD = ("| setup | sides | how bought | filter | take profit | stop | max hold | trades | per week | win | avg win "
+        "| avg loss | avg minutes held | $ per trade | **$ per week** | total | worst drawdown | years + |")
+SEP = "|" + "---|" * 18
 
 
 def line(c, s, prefix="", bold=False) -> str:
     b = "**" if bold else ""
     return (f"| {b}{prefix}{name(c)}{b} | {s['n']} | {s['wk']:.2f} | {s['win']:.0%} | ${s['aw']:+,.0f} | ${s['al']:+,.0f} "
-            f"| ${s['per']:+,.0f} | **${s['usd_wk']:+,.0f}** | ${s['total']:+,.0f} | ${s['dd']:,.0f} | {s['years']} |")
+            f"| {s['hold']:.0f} | ${s['per']:+,.0f} | **${s['usd_wk']:+,.0f}** | ${s['total']:+,.0f} | ${s['dd']:,.0f} | {s['years']} |")
 
 
 def main() -> None:
@@ -132,7 +134,8 @@ def main() -> None:
             chosen[(setup, mode)] = byday
 
     base = list(itertools.product(lib.SETUPS, MODES, db.STRUCTURES, TPS, SLS, TIME))
-    rows = {c: [] for c in base}                           # (day, $, ratio)
+    rows = {c: [] for c in base}
+    moves: list = []                                       # (minutes held, underlying move our way, option return)                           # (day, $, ratio)
     print(f"{len(have)} days with option data; {len(base) * len(FILTERS)} combinations ...")
     for n, d in enumerate(have, 1):
         chains = {}
@@ -141,6 +144,7 @@ def main() -> None:
             if f.exists():
                 chains[s] = sp.load_chain(pd.read_csv(f), d, ET)
         cache = {}
+        seen: set = set()
         for setup in lib.SETUPS:
             for mode in MODES:
                 for st in db.STRUCTURES:
@@ -171,10 +175,18 @@ def main() -> None:
                     if got is None:
                         continue
                     (debit, value), ratio, sig = got
+                    if st == "atm" and (sig.symbol, sig.m_in, sig.direction) not in seen:
+                        seen.add((sig.symbol, sig.m_in, sig.direction))
+                        g, i = grids[sig.symbol], pos[sig.symbol][d]
+                        sgn = 1 if sig.direction == "long" else -1
+                        for h in (15, 30, 60):
+                            if h < len(value) and sig.m_in + h < 390:
+                                mv = sgn * (g.close[i, sig.m_in + h] / g.close[i, sig.m_in - 1] - 1)
+                                moves.append((h, mv, float(value[h]) / debit - 1))
                     k_n = max(1, int(args.budget // (debit * 100)))
                     for tp, sl, tb in itertools.product(TPS, SLS, TIME):
-                        j, _ = db.exit_on(debit, value, sig.m_in, tp, sl, tb)
-                        rows[(setup, mode, st, tp, sl, tb)].append((d, k_n * 100 * (float(value[j]) - debit), ratio))
+                        j, _ = db.exit_on(debit, value, sig.m_in, tp, sl, None if tb is None else sig.m_in + tb)
+                        rows[(setup, mode, st, tp, sl, tb)].append((d, k_n * 100 * (float(value[j]) - debit), ratio, j))
         if n % 25 == 0 or n == len(have):
             print(f"  {n}/{len(have)} days")
 
@@ -226,9 +238,33 @@ def main() -> None:
                        f"| ${tune[b]['usd_wk']:+,.0f} | ${check[b]['usd_wk']:+,.0f} |")
         return out + [""]
 
+    buckets = [(-1, -0.002), (-0.002, -0.001), (-0.001, 0), (0, 0.001), (0.001, 0.002), (0.002, 0.003),
+               (0.003, 0.005), (0.005, 1)]
+    L += ["## What a short hold really costs (plain at-the-money 0DTE, real prices)\n",
+          "Every signal's option, bought at the ask and valued at the bid after 15 / 30 / 60 minutes, grouped by how far "
+          "QQQ/SPY moved our way in that time. Median option return in each group (and how often that move happened).\n",
+          "| underlying move our way | after 15 min | after 30 min | after 60 min |", "|---|---|---|---|"]
+    for lo, hi in buckets:
+        cells = []
+        for h in (15, 30, 60):
+            v = [r for hh, mv, r in moves if hh == h and lo <= mv < hi]
+            n_h = sum(1 for hh, _, _ in moves if hh == h)
+            cells.append(f"{np.median(v):+.0%} ({len(v) / max(n_h, 1):.0%} of trades)" if v else "-")
+        lab = (f"below {hi:+.1%}" if lo == -1 else f"above {lo:+.1%}" if hi == 1 else f"{lo:+.1%} to {hi:+.1%}")
+        L.append(f"| {lab} | " + " | ".join(cells) + " |")
+    for h in (15, 30, 60):
+        v = [(mv, r) for hh, mv, r in moves if hh == h]
+        if len(v) > 20:
+            mv_arr, r_arr = np.array(v).T
+            flat = r_arr[np.abs(mv_arr) < 0.0005]
+            slope, icpt = np.polyfit(mv_arr, r_arr, 1)
+            L.append(f"\n- {h} min hold: if price doesn't move (within 0.05%) the option loses about "
+                     f"**{-np.median(flat):.0%}** (median, spread + decay). Break-even move ~**{-icpt / slope:+.2%}** "
+                     "our way (the table shows how big a move it takes to double).")
+    L.append("")
     L += compare("How to buy", 2, db.STRUCTURES)
     L += compare("Cheap-option filter", 3, FILTERS)
-    L += compare("Time stop", 6, list(TIME), TIME)
+    L += compare("Max hold", 6, list(TIME), TIME)
     L += compare("Setup", 0, lib.SETUPS)
     L += ["## Top 15 on tune, and the same settings on the unseen CHECK year\n", HEAD, SEP]
     for c in ranked[:15]:
@@ -238,7 +274,7 @@ def main() -> None:
         b = ranked[0]
         both = sorted([r for r in pick(b[:3] + b[4:], b[3]) if r[0] in tset | cset], key=lambda r: r[0])
         yrs: dict = {}
-        for d, x, _ in both:
+        for d, x, _, _ in both:
             nn, tt = yrs.get(d.year, (0, 0.0))
             yrs[d.year] = (nn + 1, tt + x)
         L += [f"\n## Best on tune, by year: {name(b)}\n", "| year | trades | total $ |", "|---|---|---|"]
