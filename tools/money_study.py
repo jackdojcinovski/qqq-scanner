@@ -21,7 +21,6 @@ looked at once for the shortlist. Writes reports/money_<date>.md.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -32,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scanner import backtest as bt  # noqa: E402
 from scanner import intraday as ix  # noqa: E402
 from scanner import optionsim as om  # noqa: E402
-from scanner import orb  # noqa: E402
+from scanner import setups  # noqa: E402
 from scanner.config import ROOT, load_config  # noqa: E402
 from scanner.history import load_history, trading_days  # noqa: E402
 
@@ -121,15 +120,7 @@ def main() -> None:
     ctx = {s: om.daily_context(g) for s, g in grids.items()}
 
     print("collecting signals (ORB uses the scorer, takes a minute) ...")
-    signals: dict[str, list[om.Signal]] = {}
-    ots = orb.orb_trades(bars, cfg, orb.ORB_VARIANTS["both"], (1.0,),
-                         workers=min(len(bars), max(1, (os.cpu_count() or 2) - 1)))
-    signals["opening range (ORB)"] = om.from_orb(ots, "orb")
-    for name, kw in {"noise boundary": dict(band_mult=1.0, stop="vwap"),
-                     "noise boundary, wide band": dict(band_mult=1.5, stop="band_vwap")}.items():
-        signals[name] = om.from_intraday([t for g in grids.values() for t in ix.noise_trades(g, sides="both", **kw)], grids)
-    signals["VWAP trend"] = om.from_intraday([t for g in grids.values() for t in ix.vwap_trades(g, sides="both", first=90)], grids)
-
+    signals = {setups.SETUPS[k]: v for k, v in setups.collect(bars, grids, cfg).items()}
     print("pricing option paths ...")
     paths = {}            # (setup, contract) -> {(symbol, day, m_in, direction): (sig, path)}
     for setup, sigs in signals.items():

@@ -41,8 +41,11 @@ Forex Factory red-folder (high-impact USD) news days.
 
 ## Next work (in order)
 1. DONE: ORB study + option check (see above).
-2. IN PROGRESS: run `python tools/money_study.py`, read reports/money_<date>.md. Then confirm the winner on
-   real option prices. Earlier: `python tools/strategy_study.py`, read reports/strategies_<date>.md, then price the
+2. Money study (reports/money_2026-10-27.md, MODEL prices): only 0DTE ATM makes money; held to the setup's
+   exit (no TP) beats every TP (+100% best of the TPs). Check year, 5 contracts: ORB [long] +$521/wk,
+   ORB [long_up_k1] +$368/wk, noise [regime_k1] +$123/wk. Longer-dated contracts all lose.
+   IN PROGRESS: confirm on REAL 0DTE prices with `tools/real_options.py --setup orb --rule long --dte 0`
+   (and noise regime_k1, and --tp 1.0). Model may be too kind to 0DTE. Earlier: `python tools/strategy_study.py`, read reports/strategies_<date>.md, then price the
    shortlist with `option_check.py --strategy ... --itm-pct 3 --dte 20`. Strategies built so far:
    - noise-boundary intraday momentum (Zarattini, Aziz & Barbon 2024: entries on :00/:30, trailing
      stop at the boundary/VWAP, exit at close);
