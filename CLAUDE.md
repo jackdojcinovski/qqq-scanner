@@ -58,6 +58,12 @@ Forex Factory red-folder (high-impact USD) news days.
   to data/options/; `scanner/spreads.py` replays verticals/condors (last trade ffill, intrinsic floor, exit 15:50,
   TP keep 50/75% of credit, stop 2x/3x credit); `tools/credit_study.py` grid: 6 rules (put/call/condor/trend/
   trend_ic/regime) x 5 entry times x 5 strike distances x $1/2/3 widths x TP x SL, sized to ~$1,000 max loss.
+- CREDIT RESULT (reports/credit_2026-10-27.md, v2 after bad-print fix): every rule loses averaged over its
+  settings; on check only ~1% of 4,050 settings profitable; every entry-time x distance cell negative on check.
+  Selling 0DTE spreads is not the answer either.
+- NOW: `tools/buyer_study.py` + `scanner/debit.py`: cheaper ways to BUY the 12 setups on REAL chains: atm / itm2 /
+  otm1 / debit spreads ds2/ds3/ds5, cheap-option filter (ATM straddle vs prior-10-day remaining move),
+  TP +50/+100/hold, SL -50/none, time stop 12:00/13:30/none. Compare tables average over all other settings.
 - Note: independent replications show published VWAP/ORB headline returns mostly vanish with 1-2c slippage.
 
 ## Next work (in order)
