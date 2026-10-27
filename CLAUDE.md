@@ -48,7 +48,10 @@ Forex Factory red-folder (high-impact USD) news days.
    (and noise regime_k1, and --tp 1.0). Model may be too kind to 0DTE.
    REAL results (Feb 2024 on, 5 contracts): real 0DTE contracts cost ~1.44x the model (model IV too low;
    use --iv-mult ~1.6). ORB long +100% TP: +$4,962 total (+$35/wk), but 2024 -2.8k, 2025 -1.2k, 2026 +8.9k.
-   Noise regime_k1 hold: -$12,895 (its puts on down days made +$2.4k on 34 trades). ORB hold: not yet run. Earlier: `python tools/strategy_study.py`, read reports/strategies_<date>.md, then price the
+   Noise regime_k1 hold: -$12,895 (its puts on down days made +$2.4k on 34 trades). ORB hold REAL: +$9,369 (206 trades, 26% win, +$66/wk, DD $12.4k) but 2024 -4.2k, 2025 -4.9k,
+   2026 +18.4k; top 5 trades = all the profit. Recalibrated money study (iv-mult 1.6): best ORB long 0DTE
+   no TP, -30% stop: +$90/wk tune, +$129/wk check; fixed TPs +25..+100% ~breakeven or worse; VWAP and
+   noise lose. VERDICT: no robust edge yet; ORB long 0DTE is the only candidate and depends on trend days. Earlier: `python tools/strategy_study.py`, read reports/strategies_<date>.md, then price the
    shortlist with `option_check.py --strategy ... --itm-pct 3 --dte 20`. Strategies built so far:
    - noise-boundary intraday momentum (Zarattini, Aziz & Barbon 2024: entries on :00/:30, trailing
      stop at the boundary/VWAP, exit at close);
