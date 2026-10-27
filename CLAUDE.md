@@ -48,6 +48,11 @@ Forex Factory red-folder (high-impact USD) news days.
 - `tools/model_study.py`: every setup x sides (both/long/regime_k1) x 0DTE/1DTE x TP x SL on tune; combine
   the profitable ones (first signal of the day wins, max 1/day); check year once. Writes model_trades.csv.
 - `tools/real_model.py`: re-prices the combined model's trades with REAL option bars.
+- RESULT (reports/model_2026-10-27.md, real_model_2026-10-27.md): every setup slightly + on MODEL (hold to
+  15:59, both sides, 0DTE ATM best); TP +50/+100 and stops worse. Combined = orb5 nearly every day (fires
+  first at 9:35). REAL prices Feb 2024-Oct 2026: 668 trades, 35% win, -$18/trade, -$12.3k total (-$86/wk),
+  DD $33.7k; check year +$15k but the 16 months before -$27k. Real is ~$77/trade worse than model (constant-IV
+  model misses intraday 0DTE vol decay). VERDICT: no directional 0DTE-buying edge from price-only setups.
 - Note: independent replications show published VWAP/ORB headline returns mostly vanish with 1-2c slippage.
 
 ## Next work (in order)
