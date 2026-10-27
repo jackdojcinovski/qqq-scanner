@@ -26,11 +26,16 @@ Forex Factory red-folder (high-impact USD) news days.
   (deep ITM, longer-dated, high delta) matters as much as the signal.
 - Quant grade (`scanner/quant.py`): only "tight opening range" clearly helps; the grade did not hold up
   on the check year (small sample).
+- ORB study (reports/orb_study_2026-10-27.md): QQQ/SPY longs ~+0.06R after deep ITM costs; shorts lose;
+  wider stops raise win rate but shrink winners (same profit); 28% of losers are noise stop-outs, 25%
+  were +1R first. Real deep ITM option prices: 26 QQQ trades, +$307 total. Verdict: ORB alone is not enough.
+- New: `scanner/intraday.py` (noise-boundary, last-half-hour, VWAP trend; 1/day, decide on a closed
+  bar, fill next open) + `tools/strategy_study.py` + `option_check.py --strategy NAME`.
 
 ## Next work (in order)
-1. `python tools/orb_study.py` and `python tools/option_check.py --orb --itm-pct 3 --dte 20` on QQQ/SPY:
-   loser profile, stop widths, real ITM option prices.
-2. Add more QQQ/SPY quant strategies for frequency, each as its own engine + study:
+1. DONE: ORB study + option check (see above).
+2. IN PROGRESS: run `python tools/strategy_study.py`, read reports/strategies_<date>.md, then price the
+   shortlist with `option_check.py --strategy ... --itm-pct 3 --dte 20`. Strategies built so far:
    - noise-boundary intraday momentum (Zarattini, Aziz & Barbon 2024: entries on :00/:30, trailing
      stop at the boundary/VWAP, exit at close);
    - last-half-hour momentum (Gao et al.: first 30 min return predicts last 30 min);

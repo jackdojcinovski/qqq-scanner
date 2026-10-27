@@ -3,6 +3,7 @@
     python tools/option_check.py --orb --itm-pct 3 --dte 20              # ORB model, deep ITM monthly
     python tools/option_check.py --orb --symbol NVDA --stop-scale 1.5 --itm-pct 3 --dte 20
     python tools/option_check.py --variant "edge|with|long|orb|fixed30|checklist" --dte 2
+    python tools/option_check.py --strategy "noise|both|band1|vwap" --itm-pct 3 --dte 20   # see strategy_study.py
 
 For every filled trade the variant would have sent since --start, it buys the
 at-the-money call (long) or put (short) at the option's price in the fill
@@ -33,6 +34,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--variant", help="a research variant (uses the scan cache)")
     p.add_argument("--orb", action="store_true", help="use the ORB model (fast engine)")
+    p.add_argument("--strategy", help="an intraday strategy variant from tools/strategy_study.py")
     p.add_argument("--sides", default="long", choices=["long", "both"], help="ORB: longs only or both")
     p.add_argument("--stop-scale", type=float, default=1.0, help="ORB: stop width x the opening range")
     p.add_argument("--itm-pct", type=float, default=0.0, help="strike this %% in the money (e.g. 3)")
@@ -48,14 +50,21 @@ def main() -> None:
     from alpaca.data.timeframe import TimeFrame
 
     cfg = load_config()
-    if not args.orb and not args.variant:
-        raise SystemExit("Pass --orb or --variant")
+    if not args.orb and not args.variant and not args.strategy:
+        raise SystemExit("Pass --orb, --strategy or --variant")
     bars = load_history(args.symbol, date(2015, 1, 1), date.today())
     if bars.empty:
         raise SystemExit("No history. Run tools/download_history.py first.")
     start = date.fromisoformat(args.start)
     days = {d for d in trading_days(bars) if d >= start}
-    if args.orb:
+    if args.strategy:
+        from scanner import intraday as ix
+        if args.strategy not in ix.variants():
+            raise SystemExit(f"Unknown strategy. Choose from: {', '.join(ix.variants())}")
+        label = f"strategy `{args.strategy}`"
+        grid = ix.build_grid(args.symbol, bars[bars.index.date >= start - timedelta(days=40)])
+        recs = [t for t in ix.run_all({args.symbol: grid}, [args.strategy])[args.strategy] if t.day in days]
+    elif args.orb:
         from types import SimpleNamespace
         from scanner import orb
         label = f"ORB {args.sides}, stop {args.stop_scale:g}x range"
