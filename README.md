@@ -16,6 +16,10 @@ Watches QQQ on 1-minute bars, scores ICT + indicator setups out of 100, and
 | `scanner/scorer.py` | Gates, 100-point score, entry / stop / target |
 | `scanner/replay.py` | Runs a day bar by bar through the scorer |
 | `tools/replay_day.py` | Command-line replay of a past day from Alpaca data |
+| `scanner/history.py` | Monthly CSV store for downloaded bars |
+| `scanner/backtest.py` | Trade simulator, live-rule day runner, statistics |
+| `tools/download_history.py` | Downloads history from Alpaca |
+| `tools/backtest.py` | Runs the backtest and prints the report |
 | `check_setup.py` | Phase 1 connection check |
 
 ## Commands (PowerShell, inside the project with `.venv` active)
@@ -25,7 +29,13 @@ pip install -r requirements.txt     # once, after updating
 python -m pytest -q                 # run the tests
 python tools/replay_day.py 2026-10-26             # alerts the scanner would have sent
 python tools/replay_day.py 2026-10-26 --show-all  # plus near misses (60-74)
+
+python tools/download_history.py                  # ~2 years of QQQ 1-min bars (once)
+python tools/backtest.py --split 2025-11-01       # tune period vs check period
 ```
+
+The backtest saves every setup to `data/backtest/trades_*.csv` (opens in
+Excel). Results are in R on the QQQ share price; option P&L will differ.
 
 ## How a setup is scored
 
