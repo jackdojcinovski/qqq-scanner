@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scanner.config import ROOT, load_config  # noqa: E402
-from scanner.replay import format_hit, replay  # noqa: E402
+from scanner.replay import format_hit, format_reasons, replay  # noqa: E402
 
 ET = ZoneInfo("America/New_York")
 
@@ -73,7 +73,9 @@ def main() -> None:
     for h in shown:
         print(format_hit(h) + "\n")
     if not shown:
-        print("No setups. Try --show-all to see the near misses.")
+        print("No setups shown." + ("" if args.show_all else " Try --show-all to see the near misses."))
+    print()
+    print(format_reasons(hits))
 
 
 if __name__ == "__main__":

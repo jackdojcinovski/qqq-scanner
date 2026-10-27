@@ -98,7 +98,8 @@ def evaluate(history: pd.DataFrame, cfg: dict[str, Any],
     ctx = _Context.build(history, session, cfg)
     candidates = [s for s in (_score_direction(ctx, d) for d in ("long", "short")) if s]
     if not candidates:
-        return Evaluation(None, "no setup (needs a recent sweep or opening range break, and an FVG to enter from)")
+        why = " / ".join(sorted(ctx.rejects)) or "no sweep or opening range break"
+        return Evaluation(None, why)
     valid = [s for s in candidates if s.rr >= cfg["trade"]["min_rr"]]
     if not valid:
         return Evaluation(None, "reward to risk below minimum")
@@ -122,6 +123,7 @@ class _Context:
     swings: list[st.Swing]
     sweeps: list[st.Sweep]
     gaps: list[st.Gap]
+    rejects: set[str] = field(default_factory=set)
 
     @classmethod
     def build(cls, history: pd.DataFrame, session: pd.DataFrame, cfg: dict[str, Any]) -> "_Context":
@@ -187,6 +189,8 @@ def _score_direction(ctx: _Context, direction: str) -> Setup | None:
 
     # score each recent sweep (and the ORB alone) and keep the best valid one
     triggers: list[st.Sweep | None] = list(sweeps) + ([None] if orb_recent else [])
+    if not triggers:
+        ctx.rejects.add("no sweep or opening range break")
     best = None
     for sweep in triggers:
         cand = _score_trigger(ctx, direction, sweep, orb_idx, orb_now)
@@ -219,6 +223,7 @@ def _score_trigger(ctx: _Context, direction: str, sweep: st.Sweep | None,
                                f"displacement {mss.body_atr:.1f}x ATR"))
     else:
         if sweep and cfg["trade"].get("require_mss_after_sweep", True):
+            ctx.rejects.add("sweep but no structure shift")
             return None
         comps.append(Component("Structure shift", 0, W["mss"], "no displacement through structure"))
 
@@ -237,6 +242,7 @@ def _score_trigger(ctx: _Context, direction: str, sweep: st.Sweep | None,
                                f"FVG {zone.bottom:.2f}-{zone.top:.2f}"))
     else:
         if cfg["trade"].get("require_entry_zone", True):
+            ctx.rejects.add("trigger but no FVG to enter from")
             return None
         comps.append(Component("Entry zone", 0, W["fvg_ifvg"], "no FVG to enter from"))
 
@@ -295,6 +301,7 @@ def _score_trigger(ctx: _Context, direction: str, sweep: st.Sweep | None,
     stop = anchor_px * (1 - buf) if long else anchor_px * (1 + buf)
     risk = sign * (entry - stop)
     if risk <= 0 or sign * (close - stop) <= 0:
+        ctx.rejects.add("price already through the stop")
         return None
 
     beyond = sorted((l for l in ctx.levels if sign * (l.price - entry) >= t["min_rr"] * risk),

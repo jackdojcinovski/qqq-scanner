@@ -19,3 +19,10 @@ def test_replay_reports_setup_once():
 
 def test_replay_unknown_day_is_empty():
     assert replay(bullish_sweep_day(), CFG, date(2026, 10, 29)) == []
+
+
+def test_replay_explains_empty_minutes():
+    from scanner.replay import format_reasons
+    hits = replay(bullish_sweep_day(), CFG, date(2026, 10, 28))
+    assert any("outside window" in r for r in hits.reasons)   # 9:30-9:34
+    assert "Why other minutes" in format_reasons(hits)
