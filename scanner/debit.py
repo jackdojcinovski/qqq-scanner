@@ -17,6 +17,7 @@ import numpy as np
 from .spreads import EXIT_BAR, MAX_AGE, Chain, Leg, _intrinsic
 
 STRUCTURES = ["atm", "itm2", "otm1", "ds2", "ds3", "ds5"]
+MIN_SPREAD_FRAC = 0.2
 
 
 def legs_for(structure: str, S: float, direction: str) -> tuple[list[Leg], float | None]:
@@ -37,6 +38,14 @@ def legs_for(structure: str, S: float, direction: str) -> tuple[list[Leg], float
 def prepare(chain: Chain, S: np.ndarray, legs: list[Leg], m: int, cap: float | None, slip: float = 0.01,
             min_debit: float = 0.05, exit_bar: int = EXIT_BAR) -> tuple[float, np.ndarray] | None:
     """(debit paid, value you could sell for at each minute m..exit_bar) or None."""
+    got = prepare_full(chain, S, legs, m, cap, slip, min_debit, exit_bar)
+    return None if got is None else got[:2]
+
+
+def prepare_full(chain: Chain, S: np.ndarray, legs: list[Leg], m: int, cap: float | None, slip: float = 0.01,
+                 min_debit: float = 0.10, exit_bar: int = EXIT_BAR):
+    """(debit, value per minute, fresh per minute) - fresh = every leg traded within the last 2 minutes,
+    so a take-profit there is a price you could really have got, not two mismatched old prints."""
     if m < 1 or m >= exit_bar:
         return None
     for lg in legs:
@@ -46,8 +55,8 @@ def prepare(chain: Chain, S: np.ndarray, legs: list[Leg], m: int, cap: float | N
     sign = np.array([-1.0 if lg.short else 1.0 for lg in legs])          # long legs +
     px = np.vstack([chain.price[(lg.right, float(lg.strike))] for lg in legs])
     debit = float(np.sum(sign * px[:, m - 1]) + slip * len(legs))
-    if debit < min_debit or (cap is not None and debit > 0.9 * cap):
-        return None
+    if debit < min_debit or (cap is not None and not (MIN_SPREAD_FRAC * cap <= debit <= 0.9 * cap)):
+        return None            # an at-the-money debit spread can't really cost <20% or >90% of its width
     intr = np.vstack([_intrinsic(lg, S) for lg in legs])
     w = slice(m, exit_bar + 1)
     mark = np.sum(sign[:, None] * px[:, w], axis=0)
@@ -55,17 +64,22 @@ def prepare(chain: Chain, S: np.ndarray, legs: list[Leg], m: int, cap: float | N
     value = np.maximum(mark, floor) - slip * len(legs)
     if cap is not None:
         value = np.minimum(value, cap - slip * len(legs))
-    return debit, np.maximum(value, 0.0)
+    ages = np.vstack([chain.age[(lg.right, float(lg.strike))][w] for lg in legs])
+    fresh = (ages <= 2).all(axis=0)
+    return debit, np.maximum(value, 0.0), fresh
 
 
 def exit_on(debit: float, value: np.ndarray, m: int, tp: float | None, sl: float | None,
-            time_bar: int | None) -> tuple[int, str]:
+            time_bar: int | None, fresh: np.ndarray | None = None) -> tuple[int, str]:
     """Offset into value: stop first, then target, then the time stop, else the 15:50 exit."""
     n = len(value)
     end = n if time_bar is None else max(1, min(n, time_bar - m + 1))
     v = value[:end]
     hs = np.flatnonzero(v <= debit * (1 - sl)) if sl is not None else ()
-    ht = np.flatnonzero(v >= debit * (1 + tp)) if tp is not None else ()
+    ok_t = v >= debit * (1 + tp) if tp is not None else None
+    if ok_t is not None and fresh is not None:
+        ok_t = ok_t & fresh[:end]
+    ht = np.flatnonzero(ok_t) if ok_t is not None else ()
     js = hs[0] if len(hs) else end
     jt = ht[0] if len(ht) else end
     if js < end and js <= jt:

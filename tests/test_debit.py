@@ -40,3 +40,12 @@ def test_plain_call_decays_and_stops():
     assert why == "stop" and value[j] <= debit * 0.5
     j, why = db.exit_on(debit, value, 30, None, None, None)
     assert why == "close" and value[j] < debit * 0.1
+
+
+def test_rejects_impossible_spread_price():
+    S = np.full(390, 600.0)
+    # short leg's stale print almost equals the long leg: a $0.05 debit on a $2 spread is not real
+    ch = sp.load_chain(chain_df({("C", 600): [(m, 1.50) for m in range(60)],
+                                 ("C", 602): [(m, 1.47) for m in range(60)]}), DAY, ET)
+    legs, cap = db.legs_for("ds2", 600.0, "long")
+    assert db.prepare(ch, S, legs, 30, cap) is None

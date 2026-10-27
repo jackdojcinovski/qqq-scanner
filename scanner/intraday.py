@@ -57,6 +57,7 @@ class DayGrid:
     noise: np.ndarray             # mean |close/day_open - 1| at each minute, prior LOOKBACK days
     last30_noise: np.ndarray      # mean |close[389]/close[359] - 1| over prior LOOKBACK days
     tz: object = field(default=None, repr=False)
+    volume: np.ndarray | None = field(default=None, repr=False)     # days x 390 (0 where no bar)
 
     def ts(self, i: int, m: int) -> pd.Timestamp:
         d = self.days[i]
@@ -99,7 +100,7 @@ def build_grid(symbol: str, bars: pd.DataFrame, min_bars: int = 300) -> DayGrid:
     for i in range(LOOKBACK, n):
         noise[i] = move[i - LOOKBACK:i].mean(axis=0)
         l30[i] = last30[i - LOOKBACK:i].mean()
-    return DayGrid(symbol, keep, O, H, L, C, vwap, day_open, prev_close, noise, l30, tz)
+    return DayGrid(symbol, keep, O, H, L, C, vwap, day_open, prev_close, noise, l30, tz, V)
 
 
 # ---------------------------------------------------------------- trades

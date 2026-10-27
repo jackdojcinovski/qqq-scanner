@@ -39,7 +39,18 @@ Forex Factory red-folder (high-impact USD) news days.
 - New: `scanner/intraday.py` (noise-boundary, last-half-hour, VWAP trend; 1/day, decide on a closed
   bar, fill next open) + `tools/strategy_study.py` + `option_check.py --strategy NAME`.
 
-## REBUILD (Oct 27, Jack's direction) - current focus
+## JACK'S STRATEGY SPEC (Oct 27, firm - build every test around this)
+- Enter 9:30-11:00 ONLY. Hold no longer than 60-90 minutes ("hot potato" - limit premium decay).
+- Stop at most -50% of premium (test -25/-35/-50). Looking for LARGE moves: what causes them decides entries.
+- ~1 trade a day, ~$1,000 per trade, QQQ/SPY 0DTE. Results in dollars, real option prices.
+- `tools/morning_study.py` implements this: library setups <= 11:00 + coin-flip CONTROL, big-move signs
+  (`scanner/bigmove.py`: rvol, gap, gap_with, nr7, inside, prev_big, wide_or, moving, trend) chosen on tune by
+  lift in P(0.35%+ move within 60 min), grade filter, atm/itm2/ds2/ds3, TP +50/+100/+150/ride, SL, hold 60/90.
+- Bias guards: debit spreads must cost 20-90% of width; spread TP only counts when both legs traded within 2 min;
+  max 50 contracts; reports show median and total without best 5 days. If the coin control profits, distrust it.
+- Unverified: old buyer study (12:00 time stop) showed ds2 +$1.8k/wk tune and check - likely stale-print bias; rerun.
+
+## REBUILD (Oct 27, Jack's direction) - history
 - Jack's format: ~$1,000 per trade, QQQ/SPY 0DTE ATM calls/puts, target about +100% (double), stop -25..-50%
   of premium, ~1 trade a DAY (not a week). USD account at Wealthsimple: no FX, $0 per contract.
 - Target: entries that move ~+0.5% our way before ~-0.25% against, 50-60% of the time, ~5x/week.
