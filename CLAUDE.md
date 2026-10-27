@@ -53,6 +53,11 @@ Forex Factory red-folder (high-impact USD) news days.
   first at 9:35). REAL prices Feb 2024-Oct 2026: 668 trades, 35% win, -$18/trade, -$12.3k total (-$86/wk),
   DD $33.7k; check year +$15k but the 16 months before -$27k. Real is ~$77/trade worse than model (constant-IV
   model misses intraday 0DTE vol decay). VERDICT: no directional 0DTE-buying edge from price-only setups.
+- PIVOT (Jack approved Oct 27): SELL 0DTE premium (credit spreads / iron condors) on QQQ/SPY, our signals as
+  filters. 100% real option prices, no model. `tools/download_chains.py` caches daily 0DTE chains (+-3% strikes)
+  to data/options/; `scanner/spreads.py` replays verticals/condors (last trade ffill, intrinsic floor, exit 15:50,
+  TP keep 50/75% of credit, stop 2x/3x credit); `tools/credit_study.py` grid: 6 rules (put/call/condor/trend/
+  trend_ic/regime) x 5 entry times x 5 strike distances x $1/2/3 widths x TP x SL, sized to ~$1,000 max loss.
 - Note: independent replications show published VWAP/ORB headline returns mostly vanish with 1-2c slippage.
 
 ## Next work (in order)
