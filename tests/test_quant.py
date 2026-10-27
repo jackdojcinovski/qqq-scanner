@@ -80,7 +80,8 @@ def test_choose_signs_cutoff_and_one_per_day():
     assert edges["gap_with"].edge > 1 and edges["calm_regime"].edge < 0
     used = q.choose_signs(list(edges.values()), min_side=40)
     assert used == ["gap_with"]
-    assert q.cutoff_for_top(trades, used, 0.25) == 1
+    assert q.cutoff_for_top(trades, used, 0.25) == 1      # 50% have the sign: closest to 25%
+    assert q.cutoff_for_top(trades, used, 0.9) == 0
     d = date(2025, 6, 1)
     picked = q.one_per_day([_gt(d, "SPY", 1, {"gap_with"}), _gt(d, "QQQ", 1, {"gap_with"}),
                             _gt(d, "SPY", 1, set())], used, 1)

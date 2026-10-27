@@ -1,7 +1,8 @@
 """Check a variant's trades against REAL option prices (Alpaca, Feb 2024 on).
 
-    python tools/option_check.py --variant "edge|with|long|orb|fixed30|checklist"
-    python tools/option_check.py --variant "..." --dte 2 --otm 1
+    python tools/option_check.py --orb --itm-pct 3 --dte 20              # ORB model, deep ITM monthly
+    python tools/option_check.py --orb --symbol NVDA --stop-scale 1.5 --itm-pct 3 --dte 20
+    python tools/option_check.py --variant "edge|with|long|orb|fixed30|checklist" --dte 2
 
 For every filled trade the variant would have sent since --start, it buys the
 at-the-money call (long) or put (short) at the option's price in the fill
@@ -30,7 +31,11 @@ from scanner.history import ET, load_history, trading_days  # noqa: E402
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--variant", required=True)
+    p.add_argument("--variant", help="a research variant (uses the scan cache)")
+    p.add_argument("--orb", action="store_true", help="use the ORB model (fast engine)")
+    p.add_argument("--sides", default="long", choices=["long", "both"], help="ORB: longs only or both")
+    p.add_argument("--stop-scale", type=float, default=1.0, help="ORB: stop width x the opening range")
+    p.add_argument("--itm-pct", type=float, default=0.0, help="strike this %% in the money (e.g. 3)")
     p.add_argument("--symbol", default="QQQ")
     p.add_argument("--start", default="2024-02-05")
     p.add_argument("--dte", type=int, default=1, help="minimum trading days to expiry (1 = next day)")
@@ -43,15 +48,28 @@ def main() -> None:
     from alpaca.data.timeframe import TimeFrame
 
     cfg = load_config()
-    rs.variant(args.variant)                      # validates the name early
+    if not args.orb and not args.variant:
+        raise SystemExit("Pass --orb or --variant")
     bars = load_history(args.symbol, date(2015, 1, 1), date.today())
     if bars.empty:
         raise SystemExit("No history. Run tools/download_history.py first.")
     start = date.fromisoformat(args.start)
     days = {d for d in trading_days(bars) if d >= start}
-    print(f"building/reusing the scan cache for {args.symbol} ...")
-    paths = rs.build_cache({args.symbol: bars}, cfg)
-    recs = [r for r in rs.full_records(paths, cfg, args.variant, days) if r.taken and r.filled]
+    if args.orb:
+        from types import SimpleNamespace
+        from scanner import orb
+        label = f"ORB {args.sides}, stop {args.stop_scale:g}x range"
+        ots = orb.orb_trades({args.symbol: bars[bars.index.date >= start - timedelta(days=7)]}, cfg,
+                             orb.ORB_VARIANTS[args.sides], (args.stop_scale,), workers=1)
+        recs = [SimpleNamespace(day=t.day, direction=t.direction, entry=t.res.fill_price, r=t.r,
+                                fill_time=t.res.fill_time, exit_time=t.res.exit_time)
+                for t in ots if t.filled and t.day in days]
+    else:
+        rs.variant(args.variant)
+        label = f"`{args.variant}`"
+        print(f"building/reusing the scan cache for {args.symbol} ...")
+        paths = rs.build_cache({args.symbol: bars}, cfg)
+        recs = [r for r in rs.full_records(paths, cfg, args.variant, days) if r.taken and r.filled]
     print(f"{len(recs)} filled trades since {start}; fetching option bars ...")
 
     load_dotenv(ROOT / ".env")
@@ -60,9 +78,11 @@ def main() -> None:
     missing = 0
     for n, rec in enumerate(recs, 1):
         right = "C" if rec.direction == "long" else "P"
-        strike = op.atm_strike(rec.entry, 1.0, args.otm, right)
+        ref = rec.entry * (1 - args.itm_pct / 100) if right == "C" else rec.entry * (1 + args.itm_pct / 100)
         got = None
-        for expiry in op.expiry_candidates(rec.day, args.dte):
+        tries = [(e, step) for e in op.expiry_candidates(rec.day, args.dte) for step in (1.0, 2.5, 5.0)]
+        for expiry, step in tries:
+            strike = op.atm_strike(ref, step, args.otm, right)
             sym = op.occ_symbol(args.symbol, expiry, right, strike)
             req = OptionBarsRequest(symbol_or_symbols=sym, timeframe=TimeFrame.Minute,
                                     start=(rec.fill_time - pd.Timedelta(minutes=10)).to_pydatetime(),
@@ -87,8 +107,9 @@ def main() -> None:
             print(f"  {n}/{len(recs)} trades, {len(trades)} priced, {missing} without option data")
 
     L = [f"# Option price check {datetime.now():%Y-%m-%d}\n",
-         f"- Variant `{args.variant}` on {args.symbol}, trades since {start}",
-         f"- {'ATM' if not args.otm else f'{args.otm} strike(s) OTM'}, expiry at least {args.dte} trading day(s) out, "
+         f"- {label} on {args.symbol}, trades since {start}",
+         f"- {f'{args.itm_pct:g}% in the money' if args.itm_pct else ('ATM' if not args.otm else f'{args.otm} strike(s) OTM')}, "
+         f"expiry at least {args.dte} trading day(s) out, "
          f"${args.spread:.2f}/share round-trip spread",
          f"- {len(recs)} filled trades, {len(trades)} priced with real option bars, {missing} skipped (no data)\n"]
     if trades:

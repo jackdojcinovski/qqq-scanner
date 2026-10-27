@@ -108,3 +108,10 @@ def test_option_trade_pricing():
     assert t.pnl == pytest.approx((2.60 - 2.10 - 0.03) * 100)
     late = bt.TradeRecord(**{**rec.__dict__, "exit_time": idx[-1] + pd.Timedelta(minutes=30)})
     assert op.option_trade(late, bars, "x", 0.03) is None        # stale price -> skipped
+
+
+def test_itm_strike_reference():
+    entry = 700.0
+    call_ref, put_ref = entry * (1 - 0.03), entry * (1 + 0.03)
+    assert op.atm_strike(call_ref, 1.0) == 679 and op.atm_strike(put_ref, 1.0) == 721
+    assert op.atm_strike(203.4 * 0.97, 2.5) == 197.5

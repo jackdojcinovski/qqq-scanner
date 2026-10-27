@@ -159,16 +159,17 @@ def choose_signs(edges: list[SignEdge], min_side: int = 40, min_edge: float = 0.
 
 
 def cutoff_for_top(trades: list[GradedTrade], used: list[str], top_frac: float = 0.25) -> int:
-    """Smallest grade that keeps at most `top_frac` of tune trades."""
-    grades = sorted((t.grade(used) for t in trades), reverse=True)
-    if not grades:
+    """The grade cutoff whose share of tune trades is closest to `top_frac`."""
+    if not trades or not used:
         return 0
-    k = max(1, int(len(grades) * top_frac))
-    g = grades[k - 1]
-    # if ties push us over the fraction, require one more sign
-    if sum(1 for x in grades if x >= g) > len(grades) * top_frac * 1.15 and g < len(used):
-        g += 1
-    return g
+    n = len(trades)
+    best_g, best_gap = 0, float("inf")
+    for g in range(len(used), -1, -1):
+        frac = sum(1 for t in trades if t.grade(used) >= g) / n
+        gap = abs(frac - top_frac)
+        if gap < best_gap:
+            best_g, best_gap = g, gap
+    return best_g
 
 
 def one_per_day(trades: list[GradedTrade], used: list[str], cutoff: int,
