@@ -104,12 +104,15 @@ def evaluate(history: pd.DataFrame, cfg: dict[str, Any],
     return Evaluation(best)
 
 
-def gate_reason(now: pd.Timestamp, cfg: dict[str, Any], news: NewsStatus, day: DayState) -> str:
+def gate_reason(now: pd.Timestamp, cfg: dict[str, Any], news: NewsStatus, day: DayState | None) -> str:
+    """Time window, news and (when `day` is given) the daily limits."""
     w = cfg["window"]
     if not (parse_time(w["start"]) <= now.time() <= parse_time(w["end"])):
         return f"outside window {w['start']}-{w['end']}"
     if news.blocked:
         return f"news: {news.reason}"
+    if day is None:
+        return ""
     lim = cfg["limits"]
     if day.alerts_today >= lim["max_alerts_per_day"]:
         return "daily alert limit reached"

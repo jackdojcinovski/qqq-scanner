@@ -24,6 +24,12 @@ Watches QQQ on 1-minute bars, scores ICT + indicator setups out of 100, and
 | `scanner/research.py` | Candidate cache, variant grid, option cost model, ranking |
 | `tools/research.py` | Full research run: 192 variants, tune/check, writes `reports/` |
 | `scanner/options.py` + `tools/option_check.py` | Replays trades with real option prices |
+| `scanner/live.py` | Live scanner: same rules as the backtest, plus news; tracks trades |
+| `scanner/discord.py` | Discord webhook and message formats |
+| `scanner/feeds.py` | Alpaca history, live bars, market calendar, option quotes |
+| `scanner/store.py` | SQLite log of alerts and outcomes (`data/scanner.db`) |
+| `run_scanner.py` | Runs the live scanner for the day |
+| `scripts/install_task.ps1` | Schedules it for 8:25 AM on weekdays |
 | `check_setup.py` | Phase 1 connection check |
 
 ## Commands (PowerShell, inside the project with `.venv` active)
@@ -80,3 +86,17 @@ inverse FVG to enter from; and reward to risk of at least 1.5.
 75+ = alert, 60-74 = logged for the backtest, under 60 = ignored.
 Entry is the zone midpoint, the stop sits just beyond the sweep wick, and the
 target is the nearest key level at least 1.5R away (otherwise a fixed 2R).
+
+## Live alerts (Phase 4)
+
+```powershell
+python run_scanner.py --dry-run     # prints messages instead of posting (test it any time)
+python run_scanner.py               # posts to Discord; start before 9:14 ET ideally
+powershell -ExecutionPolicy Bypass -File scripts\install_task.ps1   # run it automatically
+```
+
+Each day: a start message (session, news, settings), alerts with entry, stop,
+target, suggested contract and size, follow-ups when a trade fills, takes a
+partial, or finishes, a news warning if a red-folder event is close while a
+trade is open, a heartbeat if things are quiet, and a summary once the last
+trade is done. Messages say [PAPER] until `live.paper` is set to false.

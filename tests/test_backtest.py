@@ -162,3 +162,15 @@ def test_bootstrap_ci_contains_mean():
     vals = [1.0, -1.0, 2.0, -1.0, 0.5] * 10
     lo, hi = bt.bootstrap_ci(vals)
     assert lo < sum(vals) / len(vals) < hi
+
+
+def test_live_mode_pending_open_and_events():
+    s = long_setup()
+    assert bt.simulate(s, after([candle(100.6, 100.7, low=100.5)]), CFG, live=True).outcome == "pending"
+    rows = [candle(100.5, 100.0, low=99.9), candle(100.0, 101.1, high=101.2)]
+    r = bt.simulate(s, after(rows), _cfg(mode="partial"), live=True)
+    assert r.outcome == "open" and not r.final
+    assert [e[1] for e in r.events] == ["fill", "partial"]
+    assert r.stop_now == pytest.approx(100.0)          # moved to breakeven
+    done = bt.simulate(s, after(rows + [candle(101.1, 102.1, high=102.2)]), _cfg(mode="partial"), live=True)
+    assert done.final and done.outcome == "target"

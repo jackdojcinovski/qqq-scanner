@@ -44,10 +44,16 @@ class TradeResult:
     exit_price: float | None = None
     mfe_r: float = 0.0   # best open profit reached, in R
     mae_r: float = 0.0   # worst open loss reached, in R
+    events: list[tuple[pd.Timestamp, str, float]] = field(default_factory=list)  # fill / partial
+    stop_now: float | None = None   # live only: current stop after breakeven / trailing moves
 
     @property
     def filled(self) -> bool:
         return self.fill_time is not None
+
+    @property
+    def final(self) -> bool:
+        return self.outcome not in ("pending", "open")
 
 
 def exit_settings(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -61,7 +67,7 @@ def exit_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     return e
 
 
-def simulate(setup: Setup, after: pd.DataFrame, cfg: dict[str, Any]) -> TradeResult:
+def simulate(setup: Setup, after: pd.DataFrame, cfg: dict[str, Any], live: bool = False) -> TradeResult:
     """Play a setup forward on the bars after it (same session).
 
     Exit modes (config `exit.mode`):
@@ -74,6 +80,9 @@ def simulate(setup: Setup, after: pd.DataFrame, cfg: dict[str, Any]) -> TradeRes
     Conservative assumptions: within a bar the stop is checked before anything
     favourable; the fill bar can stop out but can't take profit; stops that gap
     through exit at the bar's open; trailing stops move only on the next bar.
+
+    live=True is for a trade still in progress: when the bars run out it returns
+    "pending" (not filled yet) or "open" (in the trade) instead of closing it.
     """
     e = exit_settings(cfg)
     long = setup.direction == "long"
@@ -91,26 +100,28 @@ def simulate(setup: Setup, after: pd.DataFrame, cfg: dict[str, Any]) -> TradeRes
     partial_done = False
     best = worst = 0.0      # extremes in R
     peak = None             # best price since fill
+    events: list[tuple[pd.Timestamp, str, float]] = []
 
     def finish(px: float, outcome: str, ts) -> TradeResult:
         r = realized + remaining * sign * (px - fill_px) / risk
         return TradeResult(outcome, round(r, 3), fill_t, float(fill_px), ts, float(px),
-                           round(best, 3), round(worst, 3))
+                           round(best, 3), round(worst, 3), events)
 
     for ts, o, h, lo, c in after[["open", "high", "low", "close"]].itertuples():
         if fill_t is None:
             if ts > valid_until:
-                return TradeResult("no fill")
+                return TradeResult("no fill", exit_time=ts)
             touched = lo <= entry if long else h >= entry
             if not touched:
                 if (h >= target) if long else (lo <= target):
-                    return TradeResult("ran away")
+                    return TradeResult("ran away", exit_time=ts)
                 continue
             fill_t = ts
             fill_px = min(o, entry) if long else max(o, entry)
             risk = abs(fill_px - stop0)
             if risk <= 0:
                 return TradeResult("no fill")
+            events.append((ts, "fill", float(fill_px)))
             peak = fill_px
             worst = min(worst, sign * ((lo if long else h) - fill_px) / risk)
             if (lo <= stop) if long else (h >= stop):
@@ -141,6 +152,7 @@ def simulate(setup: Setup, after: pd.DataFrame, cfg: dict[str, Any]) -> TradeRes
                 remaining -= e["partial_fraction"]
                 partial_done = True
                 stop = fill_px
+                events.append((ts, "partial", float(level)))
         if mode in ("fixed", "partial") and ((fav >= target) if long else (fav <= target)):
             px = max(o, target) if long else min(o, target)
             return finish(px, "target", ts)
@@ -158,7 +170,13 @@ def simulate(setup: Setup, after: pd.DataFrame, cfg: dict[str, Any]) -> TradeRes
                 stop = max(stop, trail) if long else min(stop, trail)
 
     if fill_t is None:
-        return TradeResult("no fill")
+        return TradeResult("pending" if live else "no fill")
+    if live:
+        px = float(after["close"].iloc[-1]) if len(after) else fill_px
+        res = finish(px, "open", None)
+        res.exit_price = None
+        res.stop_now = stop          # current stop (moves with partial / trail)
+        return res
     return finish(float(after["close"].iloc[-1]), "close", after.index[-1])
 
 
@@ -235,7 +253,7 @@ def run_variant(dc: DayCandidates, cfg: dict[str, Any]) -> list[TradeRecord]:
         for k, rec in records.items():
             if rec.taken and k not in settled and rec.exit_time is not None and rec.exit_time <= ts:
                 settled.add(k)
-                if rec.r < 0:
+                if rec.filled and rec.r < 0:
                     losses += 1
         s, _ = select(cands, cfg)
         if s is None:
@@ -262,7 +280,7 @@ def run_variant(dc: DayCandidates, cfg: dict[str, Any]) -> list[TradeRecord]:
         if taken:
             alerts += 1
             valid = ts + pd.Timedelta(minutes=cfg["trade"]["entry_valid_minutes"])
-            busy_until = res.exit_time if res.filled else valid
+            busy_until = res.exit_time if res.exit_time is not None else valid
 
         records[s.key] = TradeRecord(
             day=dc.day, time=ts, key=s.key, direction=s.direction, score=s.score, band=band,

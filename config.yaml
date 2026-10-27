@@ -80,6 +80,16 @@ thresholds:
   alert_score: 75
   log_score: 60
 
+live:
+  paper: true                     # labels every message [PAPER] until you switch it off
+  start_time: "08:30"             # start early enough to backfill premarket
+  heartbeat_minutes: 30
+  max_risk_per_trade_usd: 100     # used for the "max contracts" suggestion
+  max_contracts: 5
+  option_delta: 0.45              # rough delta of the suggested contract
+  option_min_dte: 1               # suggest the expiry at least this many trading days out
+  summary_after_close_minutes: 5
+
 news:
   feed_url: https://nfs.faireconomy.media/ff_calendar_thisweek.json
   cache_file: data/ff_calendar_thisweek.json
