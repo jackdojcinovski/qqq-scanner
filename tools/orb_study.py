@@ -1,8 +1,7 @@
 """Deep study of the opening-range breakout (ORB) model for options trading.
 
-    python tools/download_history.py --symbols IWM,DIA,NVDA,AAPL,MSFT,AMZN,META,TSLA --start 2019-01-01
-    python tools/orb_study.py
-    python tools/orb_study.py --symbols QQQ,SPY --top 0.25
+    python tools/orb_study.py                 # QQQ and SPY only (the instruments we trade)
+    python tools/orb_study.py --top 0.25
 
 Answers, using the TUNE period for every choice and the CHECK period once:
   1. What do the losers have in common? (signs, noise stop-outs, time to stop)
@@ -31,7 +30,7 @@ from scanner import research as rs  # noqa: E402
 from scanner.config import ROOT, load_config  # noqa: E402
 from scanner.history import load_history, trading_days  # noqa: E402
 
-DEFAULT_SYMBOLS = "QQQ,SPY,IWM,DIA,NVDA,AAPL,MSFT,AMZN,META,TSLA"
+DEFAULT_SYMBOLS = "QQQ,SPY"
 COSTS = {   # name -> model; options first, the main way you'll trade it
     "deep ITM monthly": rs.CostModel(0.10, 0.00004, 0.80),
     "weekly ATM": rs.CostModel(0.05, 0.00011, 0.50),
