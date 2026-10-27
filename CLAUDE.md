@@ -29,12 +29,20 @@ Forex Factory red-folder (high-impact USD) news days.
 - ORB study (reports/orb_study_2026-10-27.md): QQQ/SPY longs ~+0.06R after deep ITM costs; shorts lose;
   wider stops raise win rate but shrink winners (same profit); 28% of losers are noise stop-outs, 25%
   were +1R first. Real deep ITM option prices: 26 QQQ trades, +$307 total. Verdict: ORB alone is not enough.
+- Strategy study (reports/strategies_2026-10-27.md): noise/VWAP/last-half all ~flat or negative after
+  deep ITM costs (best check -0.08R). Last-half-hour is dead; drop it.
+- Jack's rules (Oct 27): judge in DOLLARS with 5 contracts per trade; Wealthsimple CAD = 1.5% FX each way
+  (~3%), $0 per contract; take-profit on PREMIUM (+50% / +100% is fine, 1R for him = premium doubled);
+  LONGS by default, shorts (puts) only when the prior 2-3 days show a down trend.
+- `scanner/optionsim.py` + `tools/money_study.py`: Black-Scholes option repricing per minute, premium
+  TP/SL grid, 6 contract types (0DTE..monthly 3% ITM), regime rules, $ per week, tune/check.
 - New: `scanner/intraday.py` (noise-boundary, last-half-hour, VWAP trend; 1/day, decide on a closed
   bar, fill next open) + `tools/strategy_study.py` + `option_check.py --strategy NAME`.
 
 ## Next work (in order)
 1. DONE: ORB study + option check (see above).
-2. IN PROGRESS: run `python tools/strategy_study.py`, read reports/strategies_<date>.md, then price the
+2. IN PROGRESS: run `python tools/money_study.py`, read reports/money_<date>.md. Then confirm the winner on
+   real option prices. Earlier: `python tools/strategy_study.py`, read reports/strategies_<date>.md, then price the
    shortlist with `option_check.py --strategy ... --itm-pct 3 --dte 20`. Strategies built so far:
    - noise-boundary intraday momentum (Zarattini, Aziz & Barbon 2024: entries on :00/:30, trailing
      stop at the boundary/VWAP, exit at close);
