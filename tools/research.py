@@ -130,10 +130,11 @@ def main() -> None:
     say(f"running {len(variants)} variants on {len(paths)} chunks with {grid_workers} workers")
     results = rs.run_grid(paths, cfg, variants, grid_workers, progress=say)
 
-    ranked = rs.rank(results, tune, args.min_filled, cost)
-    base_tune = next(m for n, m in ranked if n == rs.BASELINE)
-    top = [n for n, m in ranked if m.filled >= args.min_filled][:args.top]
-    marg = rs.marginal(ranked, args.min_filled)
+    models = {
+        "options 1-2 DTE": cost,
+        "options weekly": rs.CostModel(0.05, 0.00011, 0.50),
+        "shares": rs.CostModel(0.01, 0.0, 1.0),
+    }
 
     # ---------------------------------------------------------------- report
     today = datetime.now().strftime("%Y-%m-%d")
@@ -143,53 +144,72 @@ def main() -> None:
     L.append(f"- Symbols: {', '.join(symbols)}; tune {min(tune)} to {max(tune)} ({len(tune)} days); "
              f"check {min(check)} to {max(check)} ({len(check)} days)")
     L.append(f"- {len(variants)} variants; ranked by the 90% lower bound of net R per trade; "
-             f"needs at least {args.min_filled} filled tune trades to be ranked")
-    L.append(f"- Option cost model: ${cost.spread:.2f} spread + {cost.theta_pct_per_hour:.2%} of price per hour "
-             f"held, delta {cost.delta}. 'net R' = R after that cost. alerts/wk is per symbol.")
+             f"needs at least {args.min_filled} filled tune trades to be ranked; alerts/wk is per symbol")
+    L.append("- Ranked separately under three ways of trading the signal:")
+    for name, cm in models.items():
+        L.append(f"  - **{name}**: ${cm.spread:.2f} spread + {cm.theta_pct_per_hour:.3%} of price per hour held, "
+                 f"delta {cm.delta}")
     L.append(f"- Config signature {rs.signature(cfg)}; runtime {clock.time() - t_all:.0f}s\n")
 
-    L.append("## Tune period: top 15\n")
-    L += [COLS, SEP]
-    for i, (n, m) in enumerate(ranked[:15], 1):
-        L.append(row(i, n, m))
-    L.append(row("base", rs.BASELINE, base_tune))
-    n_elig = sum(1 for _, m in ranked if m.filled >= args.min_filled)
-    L.append(f"\n{n_elig} of {len(ranked)} variants had enough trades to be ranked.")
+    summary = []
+    csv_ranked = None
+    for mname, cm in models.items():
+        ranked = rs.rank(results, tune, args.min_filled, cm)
+        csv_ranked = csv_ranked or ranked
+        base_tune = next(m for n, m in ranked if n == rs.BASELINE)
+        top = [n for n, m in ranked if m.filled >= args.min_filled][:args.top]
+        marg = rs.marginal(ranked, args.min_filled)
 
-    L.append("\n## Which choices help (median net R across ranked variants)\n")
-    L.append("| setting | " + " | ".join(["option / median net R"] * 4) + " |")
-    L.append("|---|---|---|---|---|")
-    for dim, vals in marg.items():
-        cells = [f"{k}: {v:+.3f}" for k, v in vals.items()]
-        cells += [""] * (4 - len(cells))
-        L.append(f"| {dim} | " + " | ".join(cells) + " |")
+        L.append(f"\n# Trading it with {mname}\n")
+        L.append("## Tune period: top 10\n")
+        L += [COLS, SEP]
+        for i, (n, m) in enumerate(ranked[:10], 1):
+            L.append(row(i, n, m))
+        L.append(row("base", rs.BASELINE, base_tune))
 
-    L.append("\n## Check period (untouched): top picks and baseline\n")
-    L.append("These were chosen on the tune period only. This is the honest estimate.\n")
-    L += [COLS, SEP]
-    for i, n in enumerate(top + [rs.BASELINE], 1):
-        m = rs.metrics(rs.split_rows(results[n], check), len(check) * len(symbols), cost)
-        L.append(row(i if n != rs.BASELINE else "base", n, m))
+        L.append("\n## Which choices help (median net R across ranked variants)\n")
+        width = max(len(v) for v in marg.values())
+        L.append("| setting | " + " | ".join(["option: median net R"] * width) + " |")
+        L.append("|---|" + "---|" * width)
+        for dim, vals in marg.items():
+            cells = [f"{k}: {v:+.3f}" for k, v in vals.items()]
+            cells += [""] * (width - len(cells))
+            L.append(f"| {dim} | " + " | ".join(cells) + " |")
 
-    if top:
-        best = top[0]
-        L.append(f"\n## Detail for #1 `{best}`")
-        recs_t = rs.full_records(paths, cfg, best, tune)
-        recs_c = rs.full_records(paths, cfg, best, check)
-        detail(L, "Tune period", recs_t, cost)
-        detail(L, "Check period", recs_c, cost)
-        mc = rs.metrics(rs.split_rows(results[best], check), len(check) * len(symbols), cost)
-        L.append("\n## Verdict\n")
-        if mc.filled < 30:
-            L.append(f"- Only {mc.filled} check trades: too few to confirm either way.")
-        elif mc.ci_lo > 0:
-            L.append("- Check period confirms: net R is positive with the 90% lower bound above zero.")
-        elif mc.avg_net > 0:
-            L.append("- Check period is positive on average but not conclusive (lower bound below zero).")
-        else:
-            L.append("- Check period does NOT confirm: net R is zero or negative after costs.")
+        L.append("\n## Check period (untouched): top picks and baseline\n")
+        L += [COLS, SEP]
+        for i, n in enumerate(top + [rs.BASELINE], 1):
+            m = rs.metrics(rs.split_rows(results[n], check), len(check) * len(symbols), cm)
+            L.append(row(i if n != rs.BASELINE else "base", n, m))
+        if top:
+            mc = rs.metrics(rs.split_rows(results[top[0]], check), len(check) * len(symbols), cm)
+            if mc.filled < 30:
+                verdict = f"only {mc.filled} check trades, too few to confirm"
+            elif mc.ci_lo > 0:
+                verdict = "CONFIRMED: positive after costs, 90% lower bound above zero"
+            elif mc.avg_net > 0:
+                verdict = "positive on average but not conclusive"
+            else:
+                verdict = "NOT confirmed: zero or negative after costs"
+            L.append(f"\nVerdict for #1 `{top[0]}`: {verdict}.")
+            summary.append((mname, top[0], mc, verdict))
+
+    L.append("\n# Bottom line\n")
+    L.append("| trading with | best tune variant | check filled | check net R | check 90% CI | verdict |")
+    L.append("|---|---|---|---|---|---|")
+    for mname, best, mc, verdict in summary:
+        L.append(f"| {mname} | `{best}` | {mc.filled} | {mc.avg_net:+.2f} | {mc.ci_lo:+.2f} to {mc.ci_hi:+.2f} "
+                 f"| {verdict} |")
+
+    if summary:
+        mname, best, _, _ = max(summary, key=lambda s: s[2].ci_lo if s[2].filled >= 30 else -99)
+        cm = models[mname]
+        L.append(f"\n## Detail for `{best}` ({mname})")
+        detail(L, "Tune period", rs.full_records(paths, cfg, best, tune), cm)
+        detail(L, "Check period", rs.full_records(paths, cfg, best, check), cm)
         L.append(f"\nConfig changes for `{best}`:\n\n```yaml\n{yaml_overrides(best)}\n```")
 
+    ranked = csv_ranked
     md = out_dir / f"research_{today}.md"
     md.write_text("\n".join(L) + "\n", encoding="utf-8")
     csv = out_dir / f"research_{today}_tune.csv"

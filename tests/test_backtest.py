@@ -174,3 +174,14 @@ def test_live_mode_pending_open_and_events():
     assert r.stop_now == pytest.approx(100.0)          # moved to breakeven
     done = bt.simulate(s, after(rows + [candle(101.1, 102.1, high=102.2)]), _cfg(mode="partial"), live=True)
     assert done.final and done.outcome == "target"
+
+
+def test_market_entry_fills_at_next_open_and_eod_exit():
+    s = Setup(key="k", direction="long", entry=100.0, stop=99.0, target=110.0, target_name="10R",
+              rr=10.0, entry_zone="market", time=T0, market=True)
+    rows = [candle(100.2, 100.5, low=100.1)] + [candle(100.5, 100.6, low=100.4)] * 100
+    r = bt.simulate(s, after(rows), _cfg(mode="fixed", time_exit_minutes=400))
+    assert r.fill_price == 100.2 and r.outcome == "close"
+    assert r.r == pytest.approx((100.6 - 100.2) / (100.2 - 99.0), abs=1e-3)
+    gap = [candle(98.8, 98.9, low=98.7)]
+    assert bt.simulate(s, after(gap), CFG).outcome == "no fill"     # opened beyond the stop

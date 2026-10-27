@@ -57,6 +57,7 @@ class Setup:
     has_mss: bool = False
     trend_ok: bool = False
     entry_mode: str = "mid"
+    market: bool = False      # enter at the next bar's open instead of a limit
     score: int = 0
     components: list[Component] = field(default_factory=list)
 
@@ -134,6 +135,7 @@ def candidates(history: pd.DataFrame, cfg: dict[str, Any],
     out: list[Setup] = []
     for direction in ("long", "short"):
         out += _direction_candidates(ctx, direction, entry_modes)
+    out += _classic_orb(ctx, entry_modes)
     return out, ctx.rejects
 
 
@@ -388,3 +390,56 @@ def _trigger_candidates(ctx: _Context, direction: str, sweep: st.Sweep | None,
             components=[copy.copy(c) for c in comps] + [rr_c, copy.copy(timing)],
         ))
     return out
+
+
+def _classic_orb(ctx: _Context, entry_modes) -> list[Setup]:
+    """The published 5-minute opening range breakout (Zarattini & Aziz 2023):
+    trade in the direction of the first 5-minute candle, stop at the other end
+    of it, target 10R or the close. Offered once, on the first bar after the
+    range is complete, with a market entry on the next bar's open."""
+    cfg = ctx.cfg
+    bars = ctx.session
+    n_or = cfg["session"]["opening_range_minutes"]
+    if len(bars) != n_or + 1 or not ctx.orange:
+        return []
+    first = bars.iloc[:n_or]
+    o, c = float(first["open"].iloc[0]), float(first["close"].iloc[-1])
+    if c == o:
+        return []
+    long = c > o
+    direction = "long" if long else "short"
+    sign = 1 if long else -1
+    hi, lo = ctx.orange
+    now_close = float(bars["close"].iloc[-1])
+    buf = cfg["trade"]["stop_buffer_pct"]
+    stop = lo * (1 - buf) if long else hi * (1 + buf)
+    risk = sign * (now_close - stop)
+    if risk <= 0:
+        return []
+    target = now_close + sign * 10 * risk
+    vwap = float(ctx.vwap.iloc[-1])
+    have_ema = ctx.ema_fast is not None and ctx.ema_slow is not None
+    trend_ok = have_ema and sign * (ctx.ema_fast - ctx.ema_slow) > 0
+    T = cfg["thresholds"]
+    rsi_ok = ctx.rsi5 is not None and (ctx.rsi5 < T["rsi_long_max"] if long else ctx.rsi5 > T["rsi_short_min"])
+    comps = [
+        Component("Liquidity sweep", "sweep", "sweep", False, "classic ORB"),
+        Component("Structure shift", "mss", "mss", False, "classic ORB"),
+        Component("Entry zone", "fvg_plain", "fvg_ifvg", False, "market entry"),
+        Component("Order block", "order_block", "order_block", False, ""),
+        Component("VWAP side", "vwap_side", "vwap_side", sign * (now_close - vwap) > 0, f"VWAP {vwap:.2f}"),
+        Component("Opening range break", "orb_break", "orb_break", True,
+                  f"first 5-min candle {'up' if long else 'down'}"),
+        Component("EMA trend", "ema_trend", "ema_trend", trend_ok, "5-min EMA 9 vs 20"),
+        Component("Volume", "rel_volume", "rel_volume", False, ""),
+        Component("RSI", "rsi_ok", "rsi_ok", rsi_ok, ""),
+        Component("Reward to risk", "rr", "rr", True, "R:R 10"),
+        Component("Timing", "timing_prime", "timing_prime", False, f"{bars.index[-1]:%H:%M} ET"),
+    ]
+    key = f"{bars.index[-1]:%Y-%m-%d}-{direction}-orb5"
+    return [Setup(key=key, direction=direction, entry=round(now_close, 2), stop=round(stop, 2),
+                  target=round(target, 2), target_name="10R", rr=10.0,
+                  entry_zone="market (classic ORB)", time=bars.index[-1], trigger="orb_classic",
+                  has_mss=False, trend_ok=trend_ok, entry_mode=mode, market=True,
+                  components=[copy.copy(x) for x in comps])
+            for mode in entry_modes]

@@ -122,3 +122,27 @@ def test_trend_gate_direction_filter_and_near_edge_entry():
     cfg2 = copy.deepcopy(CFG)
     cfg2["trade"]["require_trend"] = True
     assert evaluate(hist, cfg2).setup.direction == "long"     # this day's 5-min trend is up
+
+
+def test_classic_orb_candidate():
+    import copy
+    from scanner.scorer import candidates, select
+    hist = bullish_sweep_day().copy()
+    hist.loc[pd.Timestamp("2026-10-28 09:34", tz="America/New_York"), "close"] = 500.8   # first candle up
+    t = pd.Timestamp("2026-10-28 09:35", tz="America/New_York")
+    cands, _ = candidates(hist[hist.index <= t], CFG)
+    classic = [c for c in cands if c.trigger == "orb_classic"]
+    assert classic and all(c.market for c in classic)
+    c = classic[0]
+    # first 5-min candle 500.5 -> 500.5 open/close? use direction from the data
+    first = hist[(hist.index >= pd.Timestamp("2026-10-28 09:30", tz="America/New_York")) & (hist.index < t)]
+    up = first["close"].iloc[-1] > first["open"].iloc[0]
+    assert c.direction == ("long" if up else "short")
+    assert c.stop == pytest.approx((500.3 * (1 - 0.0002)) if up else (501.0 * 1.0002), abs=0.01)
+    assert c.rr == 10.0 and c.key.endswith("orb5")
+    later, _ = candidates(hist[hist.index <= t + pd.Timedelta(minutes=1)], CFG)
+    assert not any(x.trigger == "orb_classic" for x in later)      # offered once
+    cfg = copy.deepcopy(CFG)
+    cfg["trade"]["triggers"] = ["orb_classic"]
+    cfg["thresholds"]["alert_score"] = 0
+    assert select(cands, cfg)[0].trigger == "orb_classic"

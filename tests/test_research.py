@@ -15,7 +15,7 @@ CFG = load_config()
 
 def test_grid_names_parse_back():
     g = rs.grid()
-    assert len(g) == 2 * 2 * 2 * 3 * 4 * 2
+    assert len(g) == 2 * 2 * 2 * 4 * 6 * 2
     assert rs.BASELINE in {v.name for v in g}
     for v in g[:10]:
         assert rs.variant(v.name).overrides == v.overrides

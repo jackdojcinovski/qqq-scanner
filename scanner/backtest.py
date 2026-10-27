@@ -111,16 +111,19 @@ def simulate(setup: Setup, after: pd.DataFrame, cfg: dict[str, Any], live: bool 
         if fill_t is None:
             if ts > valid_until:
                 return TradeResult("no fill", exit_time=ts)
-            touched = lo <= entry if long else h >= entry
+            touched = True if setup.market else (lo <= entry if long else h >= entry)
             if not touched:
                 if (h >= target) if long else (lo <= target):
                     return TradeResult("ran away", exit_time=ts)
                 continue
             fill_t = ts
-            fill_px = min(o, entry) if long else max(o, entry)
-            risk = abs(fill_px - stop0)
-            if risk <= 0:
-                return TradeResult("no fill")
+            if setup.market:
+                fill_px = o
+            else:
+                fill_px = min(o, entry) if long else max(o, entry)
+            risk = sign * (fill_px - stop0)
+            if risk <= 0:                      # opened beyond the stop
+                return TradeResult("no fill", exit_time=ts)
             events.append((ts, "fill", float(fill_px)))
             peak = fill_px
             worst = min(worst, sign * ((lo if long else h) - fill_px) / risk)

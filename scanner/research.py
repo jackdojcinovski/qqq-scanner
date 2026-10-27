@@ -58,7 +58,7 @@ def signature(cfg: dict[str, Any]) -> str:
         "structure": cfg["structure"],
         "thresholds": {k: v for k, v in cfg["thresholds"].items() if k not in ("alert_score", "log_score")},
         "trade": {k: t[k] for k in ("stop_buffer_pct", "min_rr", "default_rr")},
-        "version": 1,
+        "version": 2,
     }
     return hashlib.sha1(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()[:10]
 
@@ -137,12 +137,15 @@ DIMENSIONS: dict[str, dict[str, dict]] = {
         "all": {"trade": {"triggers": ["sweep", "orb"]}},
         "orb": {"trade": {"triggers": ["orb"]}},
         "sweep": {"trade": {"triggers": ["sweep"]}},
+        "classic": {"trade": {"triggers": ["orb_classic"]}},
     },
     "exit": {
         "fixed60": {"exit": {"mode": "fixed", "time_exit_minutes": 60}},
         "fixed30": {"exit": {"mode": "fixed", "time_exit_minutes": 30}},
         "partial": {"exit": {"mode": "partial", "time_exit_minutes": 60}},
         "trail": {"exit": {"mode": "trail", "time_exit_minutes": 60}},
+        "fixedeod": {"exit": {"mode": "fixed", "time_exit_minutes": 400}},
+        "traileod": {"exit": {"mode": "trail", "time_exit_minutes": 400}},
     },
     "gate": {
         "score75": {"thresholds": {"alert_score": 75}, "trade": {"required_components": []}},
