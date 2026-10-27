@@ -39,6 +39,17 @@ Forex Factory red-folder (high-impact USD) news days.
 - New: `scanner/intraday.py` (noise-boundary, last-half-hour, VWAP trend; 1/day, decide on a closed
   bar, fill next open) + `tools/strategy_study.py` + `option_check.py --strategy NAME`.
 
+## REBUILD (Oct 27, Jack's direction) - current focus
+- Jack's format: ~$1,000 per trade, QQQ/SPY 0DTE ATM calls/puts, target about +100% (double), stop -25..-50%
+  of premium, ~1 trade a DAY (not a week). USD account at Wealthsimple: no FX, $0 per contract.
+- Target: entries that move ~+0.5% our way before ~-0.25% against, 50-60% of the time, ~5x/week.
+- Don't reinvent: `scanner/library.py` = 12 published/common setups (orb5, orb15, orb30, vwap10, vwap_cross,
+  vwap_pull, noise, gap_go, gap_fade, pdh, momo_1030, rsi_dip), entries all day until 14:30, no look-ahead.
+- `tools/model_study.py`: every setup x sides (both/long/regime_k1) x 0DTE/1DTE x TP x SL on tune; combine
+  the profitable ones (first signal of the day wins, max 1/day); check year once. Writes model_trades.csv.
+- `tools/real_model.py`: re-prices the combined model's trades with REAL option bars.
+- Note: independent replications show published VWAP/ORB headline returns mostly vanish with 1-2c slippage.
+
 ## Next work (in order)
 1. DONE: ORB study + option check (see above).
 2. Money study (reports/money_2026-10-27.md, MODEL prices): only 0DTE ATM makes money; held to the setup's
