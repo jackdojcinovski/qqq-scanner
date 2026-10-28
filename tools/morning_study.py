@@ -1,23 +1,24 @@
-"""Jack's strategy, tested on REAL 0DTE option prices:
-
-  * enter between 9:30 and 11:00 only
-  * hold no longer than 60 or 90 minutes ("hot potato" - limits time decay)
-  * stop at -25% / -35% / -50% of the premium at most
-  * aim for LARGE moves: take profit +50% / +100% / +150%, or ride it until the time limit
-  * one trade a day, ~$1,000 per trade, QQQ (SPY if QQQ can't be priced)
+"""Jack's day-trading strategy on REAL 0DTE option prices.
 
     python tools/morning_study.py        # needs data/options from tools/download_chains.py
 
-Signals: the published setups in scanner/library.py, restricted to 9:30-11:00, plus
-'coin' - a coin-flip direction at 9:45. The coin is a CONTROL: it has no edge, so if
-it shows a profit, the backtest is flattering itself and nothing else can be trusted.
+The rules being tested:
+  * get in between 9:30 and 11:00 only; out within 60 or 90 minutes ("hot potato")
+  * base plan: +50% target, tight stop (-20% / -25% / -35%; -50% at most)
+  * bigger targets (+100% / +150%) only when the big-move signs line up, with a TIGHTER stop
+  * or scale out: half at +50%, stop to breakeven on the rest, let it run
+  * ~$1,000 per trade, one trade a day, QQQ (SPY if QQQ can't be priced)
 
-Big-move signs (scanner/bigmove.py): relative volume, gap, NR7 / inside day,
-yesterday's big move, wide opening range, already moving, daily trend. Which signs
-count is decided on the TUNE period by how much they raise the chance of a 0.35%+
-move within the hour; then 'grade' = how many of them a trade has.
+Entries: the setups in scanner/library.py that fire before 11:00 - opening range (5/15/30 min),
+VWAP, noise boundary, gaps, yesterday's high/low, 10:30 momentum, and the ICT-style ones:
+Silver Bullet (sweep + FVG, 10-11), Judas swing (yesterday's / opening-range high or low swept and
+reclaimed), opening-range retest, first pullback after the opening drive. Plus 'coin': a coin-flip
+CONTROL that must lose - if it doesn't, the backtest is flattering itself.
 
-Ways to buy: at the money, $2 in the money, debit spreads $2 / $3 wide.
+Big-move signs (scanner/bigmove.py) are chosen on the TUNE period by how much they raise the chance
+of a 0.35%+ move our way within the hour. 'Adaptive' plans use them: when a trade has >= N signs it
+goes for +100% / +150% with a tight stop, otherwise the +50% base plan.
+
 Choices on TUNE; the last 12 months (CHECK) looked at once. Writes reports/morning_<date>.md.
 """
 from __future__ import annotations
@@ -43,16 +44,20 @@ from scanner.config import ROOT  # noqa: E402
 from scanner.history import ET, load_history  # noqa: E402
 
 OPT_DIR = ROOT / "data" / "options"
-LAST_ENTRY = 90                                  # bar 90 = 11:00
+LAST_ENTRY = 90                                  # 11:00
 SETUPS = lib.SETUPS + ["coin"]
 MODES = ["both", "long", "regime_k1"]
-STRUCTS = ["atm", "itm2", "ds2", "ds3"]
-TPS = [0.5, 1.0, 1.5, None]
-SLS = [0.25, 0.35, 0.5]
+STRUCTS = ["atm", "itm2", "ds2"]
 HOLDS = [60, 90]
-GRADES = [0, 1, 2, 3]
-BIG = 0.0035                                     # "big move": 0.35% our way within the hour
+PLANS = db.plans()
+PH = list(itertools.product(range(len(PLANS)), HOLDS))       # (plan index, hold) columns
+BIG = 0.0035
 SIGN_KEYS = list(bm.SIGNS)
+# adaptive = (big plan, base plan, signs needed)
+BIG_PLANS = [("fixed", 1.5, 0.2), ("fixed", 1.5, 0.25), ("fixed", 1.0, 0.2), ("fixed", 1.0, 0.25),
+             ("scale", 1.5, 0.25), ("scale", None, 0.25)]
+BASE_PLANS = [("fixed", 0.5, 0.25), ("fixed", 0.5, 0.35)]
+NEEDED = [2, 3]
 
 
 def coin_signals(grids) -> list[om.Signal]:
@@ -66,43 +71,35 @@ def coin_signals(grids) -> list[om.Signal]:
     return out
 
 
-def stats(rows, n_days: int) -> dict:
+def stats(days, pnl, held, n_days: int) -> dict:
     weeks = max(n_days / 5, 1)
-    p = np.array([r[1] for r in rows], float)
+    p = np.asarray(pnl, float)
     if len(p) == 0:
         return dict(n=0, wk=0.0, win=0.0, aw=0.0, al=0.0, per=0.0, med=0.0, usd_wk=0.0, total=0.0, ex5=0.0,
                     lo=-1e9, dd=0.0, hold=0.0, years="0/0")
     eq = np.concatenate([[0], np.cumsum(p)])
     yrs: dict = {}
-    for r, x in zip(rows, p):
-        yrs[r[0].year] = yrs.get(r[0].year, 0.0) + x
+    for d, x in zip(days, p):
+        yrs[d.year] = yrs.get(d.year, 0.0) + x
     sd = p.std(ddof=1) if len(p) > 1 else 0.0
-    top5 = np.sort(p)[-5:].sum() if len(p) >= 5 else p.sum()
     return dict(n=len(p), wk=len(p) / weeks, win=float((p > 0).mean()),
                 aw=float(p[p > 0].mean()) if (p > 0).any() else 0.0,
                 al=float(p[p <= 0].mean()) if (p <= 0).any() else 0.0,
                 per=float(p.mean()), med=float(np.median(p)), usd_wk=float(p.sum() / weeks), total=float(p.sum()),
-                ex5=float(p.sum() - top5),
+                ex5=float(p.sum() - np.sort(p)[-5:].sum()),
                 lo=float(p.mean() - 1.645 * sd / math.sqrt(len(p))) if len(p) > 1 else -1e9,
-                dd=float((np.maximum.accumulate(eq) - eq).max()), hold=float(np.mean([r[3] for r in rows])),
+                dd=float((np.maximum.accumulate(eq) - eq).max()), hold=float(np.mean(held)),
                 years=f"{sum(v > 0 for v in yrs.values())}/{len(yrs)}")
 
 
-def cname(c) -> str:
-    setup, mode, st, tp, sl, hold, gr = c
-    return (f"{setup} | {mode} | {st} | {'ride' if tp is None else f'+{tp:.0%}'} | -{sl:.0%} | {hold} min | "
-            f"grade {gr}+")
+HEAD = ("| setup | sides | how bought | plan (target / stop) | max hold | trades | per week | win | avg win | avg loss "
+        "| median | minutes held | $ per trade | **$ per week** | total | total without best 5 | worst drawdown | years + |")
+SEP = "|" + "---|" * 18
 
 
-HEAD = ("| setup | sides | how bought | take profit | stop | max hold | big-move grade | trades | per week | win "
-        "| avg win | avg loss | median | minutes held | $ per trade | **$ per week** | total | total without best 5 "
-        "| worst drawdown | years + |")
-SEP = "|" + "---|" * 20
-
-
-def line(c, s, prefix="", bold=False, label=None) -> str:
+def line(label, s, bold=False) -> str:
     b = "**" if bold else ""
-    return (f"| {b}{prefix}{label or cname(c)}{b} | {s['n']} | {s['wk']:.2f} | {s['win']:.0%} | ${s['aw']:+,.0f} | ${s['al']:+,.0f} "
+    return (f"| {b}{label}{b} | {s['n']} | {s['wk']:.2f} | {s['win']:.0%} | ${s['aw']:+,.0f} | ${s['al']:+,.0f} "
             f"| ${s['med']:+,.0f} | {s['hold']:.0f} | ${s['per']:+,.0f} | **${s['usd_wk']:+,.0f}** | ${s['total']:+,.0f} "
             f"| ${s['ex5']:+,.0f} | ${s['dd']:,.0f} | {s['years']} |")
 
@@ -135,7 +132,6 @@ def main() -> None:
         raise SystemExit("No option chains. Run tools/download_chains.py first.")
     split = date.fromisoformat(args.split) if args.split else have[-1] - timedelta(days=365)
     tune_days, check_days = [d for d in have if d < split], [d for d in have if d >= split]
-    tset, cset = set(tune_days), set(check_days)
 
     print("signals ...")
     sigs = lib.all_signals(grids, ctx)
@@ -145,9 +141,7 @@ def main() -> None:
         for mode in MODES:
             out: dict = {}
             for s in sorted(sigs[setup], key=lambda s: (s.day, s.m_in, s.symbol != symbols[0])):
-                if s.m_in > LAST_ENTRY:
-                    continue
-                if mode == "long" and s.direction != "long":
+                if s.m_in > LAST_ENTRY or (mode == "long" and s.direction != "long"):
                     continue
                 if mode == "regime_k1":
                     c = ctx[s.symbol]
@@ -157,10 +151,10 @@ def main() -> None:
                 out.setdefault(s.day, []).append(s)
             chosen[(setup, mode)] = out
 
-    base = list(itertools.product(SETUPS, MODES, STRUCTS, TPS, SLS, HOLDS))
-    rows = {c: [] for c in base}                    # (day, $, signs, minutes held, m_in)
-    labels = []                                     # (day, setup, signs, big move?, $ ref)
-    print(f"{len(have)} days with option data ...")
+    groups = list(itertools.product(SETUPS, MODES, STRUCTS))
+    gidx = {g: k for k, g in enumerate(groups)}
+    rec_group, rec_day, rec_mask, rec_m, rec_big, pnl_rows, held_rows = [], [], [], [], [], [], []
+    print(f"{len(have)} days with option data; {len(groups)} setup/side/contract groups x {len(PH)} plans ...")
     for n, d in enumerate(have, 1):
         chains = {}
         for s in symbols:
@@ -168,152 +162,191 @@ def main() -> None:
             if f.exists():
                 chains[s] = sp.load_chain(pd.read_csv(f), d, ET)
         cache, sign_cache = {}, {}
-        for setup in SETUPS:
-            for mode in MODES:
-                for st in STRUCTS:
-                    got = None
-                    for sig in chosen[(setup, mode)].get(d, []):
-                        ch = chains.get(sig.symbol)
-                        if ch is None or not ch.price:
-                            continue
-                        key = (sig.symbol, sig.m_in, sig.direction, st)
-                        if key not in cache:
-                            g, i = grids[sig.symbol], pos[sig.symbol][d]
-                            legs, cap = db.legs_for(st, float(g.close[i, sig.m_in - 1]), sig.direction)
-                            cache[key] = db.prepare_full(ch, g.close[i], legs, sig.m_in, cap, args.slip)
-                        if cache[key] is not None:
-                            got = (cache[key], sig)
-                            break
-                    if got is None:
-                        continue
-                    (debit, value, fresh), sig = got
-                    skey = (sig.symbol, sig.m_in, sig.direction)
-                    if skey not in sign_cache:
-                        i = pos[sig.symbol][d]
-                        sg = feats[sig.symbol].signs(i, sig.m_in, sig.direction)
-                        sign_cache[skey] = tuple(sg[k] for k in SIGN_KEYS) if sg else None
-                    signs = sign_cache[skey]
-                    if signs is None:
-                        continue
-                    k_n = min(args.max_contracts, max(1, int(args.budget // (debit * 100))))
-                    for tp, sl, hold in itertools.product(TPS, SLS, HOLDS):
-                        j, _ = db.exit_on(debit, value, sig.m_in, tp, sl, sig.m_in + hold, fresh)
-                        pnl = k_n * 100 * (float(value[j]) - debit)
-                        rows[(setup, mode, st, tp, sl, hold)].append((d, pnl, signs, j, sig.m_in))
-                        if mode == "both" and st == "atm" and tp is None and sl == 0.5 and hold == 60 \
-                                and setup != "coin":
-                            g, i = grids[sig.symbol], pos[sig.symbol][d]
-                            labels.append((d, setup, signs, bm.max_move(g, i, sig.m_in, sig.direction, 60) >= BIG, pnl))
+        for setup, mode, st in groups:
+            got = None
+            for sig in chosen[(setup, mode)].get(d, []):
+                ch = chains.get(sig.symbol)
+                if ch is None or not ch.price:
+                    continue
+                key = (sig.symbol, sig.m_in, sig.direction, st)
+                if key not in cache:
+                    g, i = grids[sig.symbol], pos[sig.symbol][d]
+                    legs, cap = db.legs_for(st, float(g.close[i, sig.m_in - 1]), sig.direction)
+                    cache[key] = db.prepare_full(ch, g.close[i], legs, sig.m_in, cap, args.slip)
+                if cache[key] is not None:
+                    got = (cache[key], sig)
+                    break
+            if got is None:
+                continue
+            (debit, value, fresh), sig = got
+            skey = (sig.symbol, sig.m_in, sig.direction)
+            if skey not in sign_cache:
+                i = pos[sig.symbol][d]
+                sg = feats[sig.symbol].signs(i, sig.m_in, sig.direction)
+                mask = sum(1 << k for k, name in enumerate(SIGN_KEYS) if sg and sg[name]) if sg else -1
+                big = bm.max_move(grids[sig.symbol], i, sig.m_in, sig.direction, 60) >= BIG
+                sign_cache[skey] = (mask, big)
+            mask, big = sign_cache[skey]
+            if mask < 0:
+                continue
+            k_n = min(args.max_contracts, max(1, int(args.budget // (debit * 100))))
+            prow, hrow = [], []
+            for pi, hold in PH:
+                avg, held = db.run_plan(debit, value, sig.m_in, PLANS[pi], sig.m_in + hold, fresh)
+                prow.append(k_n * 100 * (avg - debit))
+                hrow.append(held)
+            rec_group.append(gidx[(setup, mode, st)])
+            rec_day.append(d)
+            rec_mask.append(mask)
+            rec_m.append(sig.m_in)
+            rec_big.append(big)
+            pnl_rows.append(prow)
+            held_rows.append(hrow)
         if n % 25 == 0 or n == len(have):
             print(f"  {n}/{len(have)} days")
 
-    # which big-move signs count (tune only)
-    lt = [r for r in labels if r[0] in tset]
+    G = np.array(rec_group)
+    D = np.array(rec_day)
+    MASK = np.array(rec_mask)
+    BIGM = np.array(rec_big)
+    PNL = np.array(pnl_rows)
+    HELD = np.array(held_rows)
+    is_tune = np.array([d < split for d in D])
+    ph_index = {ph: k for k, ph in enumerate(PH)}
+    plan_index = {pl: k for k, pl in enumerate(PLANS)}
+
+    # ---- big-move signs: which count (tune, pooled over real setups, 'both' sides, at the money)
+    ref = np.array([groups[g][0] != "coin" and groups[g][1] == "both" and groups[g][2] == "atm" for g in G]) & is_tune
+    ref_col = ph_index[(plan_index[("fixed", 0.5, 0.35)], 60)]
     sign_rows, used = [], []
-    for k_i, k in enumerate(SIGN_KEYS):
-        w = [r for r in lt if r[2][k_i]]
-        wo = [r for r in lt if not r[2][k_i]]
-        if len(w) < 40 or len(wo) < 40:
-            sign_rows.append((k, len(w), None, None, None, None, False))
+    for k, name in enumerate(SIGN_KEYS):
+        has = (MASK & (1 << k)) > 0
+        w, wo = ref & has, ref & ~has
+        if w.sum() < 40 or wo.sum() < 40:
+            sign_rows.append((name, int(w.sum()), None, None, None, None, False))
             continue
-        bw, bwo = np.mean([r[3] for r in w]), np.mean([r[3] for r in wo])
-        pw, pwo = np.mean([r[4] for r in w]), np.mean([r[4] for r in wo])
-        use = (bw - bwo) >= 0.05 and pw > pwo
+        bw, bwo = BIGM[w].mean(), BIGM[wo].mean()
+        pw, pwo = PNL[w, ref_col].mean(), PNL[wo, ref_col].mean()
+        use = (bw - bwo) >= 0.05
         if use:
-            used.append(k_i)
-        sign_rows.append((k, len(w), bw, bwo, pw, pwo, use))
+            used.append(k)
+        sign_rows.append((name, int(w.sum()), bw, bwo, pw, pwo, use))
+    umask = sum(1 << k for k in used)
+    GRADE = np.array([bin(int(m) & umask).count("1") for m in MASK])
 
-    def grade(signs) -> int:
-        return sum(1 for k_i in used if signs[k_i])
+    # ---- every configuration: (group, plan label, hold) -> per-trade pnl column
+    configs = []                                            # (label parts, column getter)
+    for gi, (setup, mode, st) in enumerate(groups):
+        rows = np.flatnonzero(G == gi)
+        if len(rows) == 0:
+            continue
+        for pi, hold in PH:
+            col = ph_index[(pi, hold)]
+            configs.append(((setup, mode, st, db.plan_label(PLANS[pi]), hold), rows, PNL[rows, col], HELD[rows, col]))
+        for bp, basep, need in itertools.product(BIG_PLANS, BASE_PLANS, NEEDED):
+            for hold in HOLDS:
+                cb = ph_index[(plan_index[bp], hold)]
+                cs = ph_index[(plan_index[basep], hold)]
+                big_rows = GRADE[rows] >= need
+                pnl = np.where(big_rows, PNL[rows, cb], PNL[rows, cs])
+                held = np.where(big_rows, HELD[rows, cb], HELD[rows, cs])
+                lab = f"ADAPTIVE: {need}+ signs -> {db.plan_label(bp)}, else {db.plan_label(basep)}"
+                configs.append(((setup, mode, st, lab, hold), rows, pnl, held))
 
-    configs = [b + (gr,) for b in base for gr in GRADES]
+    results = []
+    for (setup, mode, st, lab, hold), rows, pnl, held in configs:
+        t = is_tune[rows]
+        ts = stats(D[rows][t], pnl[t], held[t], len(tune_days))
+        cs = stats(D[rows][~t], pnl[~t], held[~t], len(check_days))
+        results.append(((setup, mode, st, lab, hold), ts, cs, rows, pnl, held))
+    real = [r for r in results if r[0][0] != "coin" and r[1]["n"] >= args.min_trades]
+    coin = [r for r in results if r[0][0] == "coin" and r[1]["n"] >= args.min_trades]
+    ranked = sorted(real, key=lambda r: r[1]["lo"] * r[1]["wk"], reverse=True)
 
-    def subset(c, period):
-        b, gr = c[:6], c[6]
-        return [r for r in rows[b] if r[0] in period and grade(r[2]) >= gr]
-
-    tune = {c: stats(subset(c, tset), len(tune_days)) for c in configs}
-    check = {c: stats(subset(c, cset), len(check_days)) for c in configs}
-    ok = [c for c in configs if tune[c]["n"] >= args.min_trades]
-    real = [c for c in ok if c[0] != "coin"]
-    ranked = sorted(real, key=lambda c: tune[c]["lo"] * tune[c]["wk"], reverse=True)
+    def lab(key):
+        setup, mode, st, plan, hold = key
+        return f"{setup} | {mode} | {st} | {plan} | {hold} min"
 
     L = [f"# Morning hot-potato strategy on REAL 0DTE option prices ({datetime.now():%Y-%m-%d})\n",
-         "- Enter 9:30-11:00 only, hold at most 60 or 90 minutes, stop at -25% / -35% / -50% of the premium, "
-         "take profit +50% / +100% / +150% or ride to the time limit.",
+         "- Entries 9:30-11:00 only; out within 60 or 90 minutes. Base plan +50% with a tight stop; bigger targets "
+         "only when big-move signs line up (ADAPTIVE plans), or half out at +50% and let the rest run.",
          f"- {', '.join(symbols)} ({symbols[0]} preferred), one trade a day per setup, about ${args.budget:,.0f} per trade "
          f"(max {args.max_contracts} contracts), ${args.slip:.2f} slippage per leg each way, $0 commission, no FX.",
-         "- Real traded option prices. A take profit on a spread only counts in a minute where both legs traded.",
+         "- Real traded option prices; a spread's take profit only counts in a minute where both legs traded.",
          f"- Tune {tune_days[0]} to {tune_days[-1]} ({len(tune_days)} days); check {check_days[0]} to {check_days[-1]} "
          f"({len(check_days)} days, never used to choose).\n",
          "## What causes a big move? (tune; big = 0.35%+ our way within the hour)\n",
-         "| sign | trades with it | big-move rate with | without | $ per trade with (ref) | without | counts? |",
+         "| sign | trades with it | big-move rate with | without | $ per trade with (+50%/-35%, 60 min) | without | counts? |",
          "|---|---|---|---|---|---|---|"]
-    for k, nw, bw, bwo, pw, pwo, use in sign_rows:
+    for name, nw, bw, bwo, pw, pwo, use in sign_rows:
         if bw is None:
-            L.append(f"| {bm.SIGNS[k]} | {nw} | - | - | - | - | too few |")
+            L.append(f"| {bm.SIGNS[name]} | {nw} | - | - | - | - | too few |")
         else:
-            L.append(f"| {bm.SIGNS[k]} | {nw} | {bw:.0%} | {bwo:.0%} | ${pw:+,.0f} | ${pwo:+,.0f} | {'**yes**' if use else ''} |")
-    L.append(f"\nGrade = how many of the {len(used)} counted signs a trade has. "
-             "Reference trade for this table: at the money, -50% stop, 60-minute max hold, no take profit.\n")
+            L.append(f"| {bm.SIGNS[name]} | {nw} | {bw:.0%} | {bwo:.0%} | ${pw:+,.0f} | ${pwo:+,.0f} | {'**yes**' if use else ''} |")
+    L.append(f"\nSigns that count: {len(used)}. A trade's grade = how many it has.\n")
 
-    coin = [c for c in ok if c[0] == "coin"]
     if coin:
-        L += ["## Control: coin-flip entries (should LOSE about the cost of trading)\n",
-              f"- Average over all {len(coin)} coin settings: tune ${np.mean([tune[c]['usd_wk'] for c in coin]):+,.0f}/week, "
-              f"check ${np.mean([check[c]['usd_wk'] for c in coin]):+,.0f}/week; profitable on both: "
-              f"{sum(1 for c in coin if tune[c]['usd_wk'] > 0 and check[c]['usd_wk'] > 0)} of {len(coin)}.",
-              "- If the coin looks profitable, the backtest is too kind and the results below are not trustworthy.\n"]
+        both = sum(1 for r in coin if r[1]["usd_wk"] > 0 and r[2]["usd_wk"] > 0)
+        L += ["## Control: coin-flip entries (must LOSE)\n",
+              f"- Average over {len(coin)} coin settings: tune ${np.mean([r[1]['usd_wk'] for r in coin]):+,.0f}/week, "
+              f"check ${np.mean([r[2]['usd_wk'] for r in coin]):+,.0f}/week; profitable on both: {both} of {len(coin)}.",
+              "- " + ("OK: no edge from randomness, the test isn't flattering itself." if both <= 0.05 * len(coin) else
+                      "WARNING: coin flips look profitable too often - treat every result below with suspicion.") + "\n"]
 
-    def compare(title, idx, values, fmt=str):
-        out = [f"## {title} (average over every other setting, real setups only)\n",
+    def compare(title, fn, values):
+        out = [f"## {title} (average over every other setting)\n",
                "| choice | settings | tune avg $/week | tune share profitable | check avg $/week | check share profitable |",
                "|---|---|---|---|---|---|"]
         for v in values:
-            cs = [c for c in real if c[idx] == v]
+            cs = [r for r in real if fn(r[0]) == v]
             if cs:
-                out.append(f"| {fmt(v)} | {len(cs)} | ${np.mean([tune[c]['usd_wk'] for c in cs]):+,.0f} "
-                           f"| {np.mean([tune[c]['usd_wk'] > 0 for c in cs]):.0%} "
-                           f"| ${np.mean([check[c]['usd_wk'] for c in cs]):+,.0f} "
-                           f"| {np.mean([check[c]['usd_wk'] > 0 for c in cs]):.0%} |")
+                out.append(f"| {v} | {len(cs)} | ${np.mean([r[1]['usd_wk'] for r in cs]):+,.0f} "
+                           f"| {np.mean([r[1]['usd_wk'] > 0 for r in cs]):.0%} | ${np.mean([r[2]['usd_wk'] for r in cs]):+,.0f} "
+                           f"| {np.mean([r[2]['usd_wk'] > 0 for r in cs]):.0%} |")
         return out + [""]
 
-    L += compare("Setup", 0, lib.SETUPS)
-    L += compare("Sides", 1, MODES)
-    L += compare("How bought", 2, STRUCTS)
-    L += compare("Take profit", 3, TPS, lambda v: "ride" if v is None else f"+{v:.0%}")
-    L += compare("Stop", 4, SLS, lambda v: f"-{v:.0%}")
-    L += compare("Max hold", 5, HOLDS, lambda v: f"{v} min")
-    L += compare("Big-move grade", 6, GRADES, lambda v: f"{v}+")
-    L += ["## Top 15 on tune, and the same settings on the unseen CHECK year\n", HEAD, SEP]
-    for c in ranked[:15]:
-        L.append(line(c, tune[c]))
-        L.append(line(c, check[c], "check: ", bold=True))
+    L += compare("Entry setup", lambda k: k[0], lib.SETUPS)
+    L += compare("Sides", lambda k: k[1], MODES)
+    L += compare("How bought", lambda k: k[2], STRUCTS)
+    plan_names = [db.plan_label(pl) for pl in PLANS] + sorted({k[3] for k, *_ in real if k[3].startswith("ADAPTIVE")})
+    L += compare("Trade plan (target / stop)", lambda k: k[3], plan_names)
+    L += compare("Max hold", lambda k: k[4], HOLDS)
 
-    # combined: best settings per setup (tune), first qualifying signal of the day wins
+    L += ["## Top 15 on tune, and the same settings on the unseen CHECK year\n", HEAD, SEP]
+    for key, ts, cs, *_ in ranked[:15]:
+        L.append(line(lab(key), ts))
+        L.append(line("check: " + lab(key), cs, bold=True))
+
+    # combined model: best settings per entry setup (tune), first signal of the day wins
     best = {}
-    for c in ranked:
-        best.setdefault(c[0], c)
-    keep = [c for c in best.values() if tune[c]["per"] > 0 and tune[c]["lo"] > -1e8]
-    L.append("\n## Combined model: best settings per setup (chosen on tune), first signal of the day wins\n")
+    for r in ranked:
+        best.setdefault(r[0][0], r)
+    keep = [r for r in best.values() if r[1]["per"] > 0]
+    L.append("\n## Combined model: best settings per entry setup (chosen on tune), first signal of the day wins\n")
     if keep:
-        trades = [(r, c) for c in keep for r in rows[c[:6]] if grade(r[2]) >= c[6]]
-        byday: dict = {}
-        for r, c in sorted(trades, key=lambda x: (x[0][0], x[0][4])):
-            byday.setdefault(r[0], (r, c))
-        combo = [byday[d] for d in sorted(byday)]
-        ct = stats([r for r, _ in combo if r[0] in tset], len(tune_days))
-        cc = stats([r for r, _ in combo if r[0] in cset], len(check_days))
-        L.append("Uses: " + "; ".join(f"`{cname(c)}`" for c in keep) + "\n")
-        lab = "combined | mixed | mixed | mixed | mixed | mixed | mixed"
-        L += [HEAD, SEP, line(None, ct, label=lab), line(None, cc, "check: ", bold=True, label=lab)]
+        picks: dict = {}
+        M_ARR = np.array(rec_m)
+        for key, ts, cs, rows, pnl, held in keep:
+            for rr, x, h in zip(rows, pnl, held):
+                d = D[rr]
+                cand = (M_ARR[rr], x, h, key[0])
+                if d not in picks or cand[0] < picks[d][0]:
+                    picks[d] = cand
+        days = sorted(picks)
+        t_days = [d for d in days if d < split]
+        c_days = [d for d in days if d >= split]
+        ct = stats(t_days, [picks[d][1] for d in t_days], [picks[d][2] for d in t_days], len(tune_days))
+        cc = stats(c_days, [picks[d][1] for d in c_days], [picks[d][2] for d in c_days], len(check_days))
+        L.append("Uses: " + "; ".join(f"`{lab(r[0])}`" for r in keep) + "\n")
+        L += [HEAD, SEP, line("combined | mixed | mixed | mixed | mixed", ct),
+              line("check: combined | mixed | mixed | mixed | mixed", cc, bold=True)]
         mix: dict = {}
-        for r, c in combo:
-            mix[c[0]] = mix.get(c[0], 0) + 1
+        for d in days:
+            mix[picks[d][3]] = mix.get(picks[d][3], 0) + 1
         L.append("\nWho took the day: " + ", ".join(f"{k} {v}" for k, v in sorted(mix.items(), key=lambda x: -x[1])))
         by_m: dict = {}
-        for r, _ in combo:
-            by_m.setdefault(f"{r[0]:%Y-%m}", []).append(r[1])
+        for d in days:
+            by_m.setdefault(f"{d:%Y-%m}", []).append(picks[d][1])
         L += ["", "| month | trades | $ |", "|---|---|---|"]
         L += [f"| {m} | {len(v)} | ${sum(v):+,.0f} |" for m, v in sorted(by_m.items())]
         L += ["\n## Bottom line\n",
@@ -322,11 +355,10 @@ def main() -> None:
               f"- Combined, unseen check year: {cc['n']} trades ({cc['wk']:.2f}/week), win {cc['win']:.0%}, "
               f"${cc['per']:+,.0f}/trade (median ${cc['med']:+,.0f}), **${cc['usd_wk']:+,.0f}/week**, total "
               f"${cc['total']:+,.0f} (${cc['ex5']:+,.0f} without its best 5 days), worst drawdown ${cc['dd']:,.0f}.",
-              f"- Real-setup settings profitable on BOTH tune and check: "
-              f"{sum(1 for c in real if tune[c]['usd_wk'] > 0 and check[c]['usd_wk'] > 0)} of {len(real)} "
-              f"(coin control: {sum(1 for c in coin if tune[c]['usd_wk'] > 0 and check[c]['usd_wk'] > 0)} of {len(coin)})."]
+              f"- Settings profitable on BOTH tune and check: {sum(1 for r in real if r[1]['usd_wk'] > 0 and r[2]['usd_wk'] > 0)}"
+              f" of {len(real)} (coin control: {sum(1 for r in coin if r[1]['usd_wk'] > 0 and r[2]['usd_wk'] > 0)} of {len(coin)})."]
     else:
-        L.append("No setup was profitable on tune. Nothing to combine.")
+        L.append("No entry setup was profitable on tune with these plans. Nothing to combine.")
     out = ROOT / "reports" / f"morning_{datetime.now():%Y-%m-%d}.md"
     out.parent.mkdir(exist_ok=True)
     out.write_text("\n".join(L) + "\n", encoding="utf-8")

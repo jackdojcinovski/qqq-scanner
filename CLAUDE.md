@@ -46,6 +46,11 @@ Forex Factory red-folder (high-impact USD) news days.
 - `tools/morning_study.py` implements this: library setups <= 11:00 + coin-flip CONTROL, big-move signs
   (`scanner/bigmove.py`: rvol, gap, gap_with, nr7, inside, prev_big, wide_or, moving, trend) chosen on tune by
   lift in P(0.35%+ move within 60 min), grade filter, atm/itm2/ds2/ds3, TP +50/+100/+150/ride, SL, hold 60/90.
+- Exits (Jack, Oct 27): base target +50% with a tight stop (-25/-35%); +100/+150% ONLY when big-move signs line
+  up, with a TIGHTER stop; or scale out (half at +50%, breakeven stop on the rest). `scanner/debit.py` plans()/run_plan;
+  morning_study tests fixed, scale-out and ADAPTIVE (grade-based) plans.
+- Entries include ICT-style setups (library.ict_signals): silver_bullet (sweep + FVG 10-11), judas_pd / judas_or
+  (sweep of PDH/PDL or OR15 then reclaim + MSS), orb_retest, first_pull (opening drive -> pullback holding VWAP -> HOD).
 - Bias guards: debit spreads must cost 20-90% of width; spread TP only counts when both legs traded within 2 min;
   max 50 contracts; reports show median and total without best 5 days. If the coin control profits, distrust it.
 - Unverified: old buyer study (12:00 time stop) showed ds2 +$1.8k/wk tune and check - likely stale-print bias; rerun.

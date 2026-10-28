@@ -150,11 +150,141 @@ def day_signals(g: ix.DayGrid, i: int, ctx_row=None) -> list[Signal]:
             if not up_trend and r[j] > 90:
                 add("rsi_dip", -1, m)
                 break
+    out += ict_signals(g, i, ctx_row)
+    return out
+
+
+ICT_END = 90              # ICT-style entries only until 11:00
+
+
+def _bars5(x: np.ndarray, how: str) -> np.ndarray:
+    r = x[: (len(x) // 5) * 5].reshape(-1, 5)
+    return {"open": r[:, 0], "high": r.max(axis=1), "low": r.min(axis=1), "close": r[:, -1]}[how]
+
+
+def ict_signals(g: ix.DayGrid, i: int, ctx_row=None) -> list[Signal]:
+    """Day-trading entries in the ICT style, mechanical and on closed bars only.
+
+    silver_bullet  10:00-11:00: a liquidity sweep (wick through the last 30 min's swing low/high, close back
+                   inside), then a displacement candle leaving a fair value gap (5-min); enter when price
+                   pulls back into the gap and holds it
+    judas_pd       first hour: price runs through yesterday's low (high), then a 5-min close back above the
+                   level AND above the sweep candle's high (market structure shift) -> reverse
+    judas_or       same, but the liquidity is the first 15 minutes' high / low (failed breakout)
+    orb_retest     5-min close beyond the first 15 minutes' range, then the first 1-min retest of that edge
+                   that holds -> go with the breakout
+    first_pull     strong opening drive (9:30-9:45), a pullback of 30%+ that stays on the VWAP side, then a
+                   new high (low) of day -> continuation
+    """
+    H, L, C, O, V = g.high[i], g.low[i], g.close[i], g.open[i], g.vwap[i]
+    o = g.day_open[i]
+    O5, H5, L5, C5 = (_bars5(x, k) for x, k in ((O, "open"), (H, "high"), (L, "low"), (C, "close")))
+    out: list[Signal] = []
+
+    def add(name, s, m):
+        if s and 1 <= m <= ICT_END:
+            x = _sig(g, i, name, s, m)
+            if x:
+                out.append(x)
+
+    body = np.abs(C5 - O5)
+    # silver bullet: FVG bar k completes between 10:00 and 10:55 (5-min bars 5..16)
+    best = None
+    for k in range(5, 17):
+        for s in (1, -1):
+            if s > 0:
+                fvg = L5[k] > H5[k - 2]
+                disp = C5[k - 1] > O5[k - 1]
+                top, bot = L5[k], H5[k - 2]
+            else:
+                fvg = H5[k] < L5[k - 2]
+                disp = C5[k - 1] < O5[k - 1]
+                top, bot = H5[k], L5[k - 2]
+            if not (fvg and disp and body[k - 1] >= 1.5 * np.median(body[:k - 1])):
+                continue
+            swept = False
+            for j in range(max(1, k - 6), k - 1):              # sweep before the displacement
+                swing = L5[max(0, j - 6):j].min() if s > 0 else H5[max(0, j - 6):j].max()
+                if (s > 0 and L5[j] < swing and C5[j] > swing) or (s < 0 and H5[j] > swing and C5[j] < swing):
+                    swept = True
+                    break
+            if not swept:
+                continue
+            for t in range(5 * k + 5, ICT_END):                   # first 1-min retrace into the gap that holds
+                if (s > 0 and L[t] <= top and C[t] >= bot) or (s < 0 and H[t] >= top and C[t] <= bot):
+                    if best is None or t + 1 < best[1]:
+                        best = (s, t + 1)
+                    break
+            break
+    if best:
+        add("silver_bullet", *best)
+
+    # judas swing through yesterday's high / low, or the first-15-minute range
+    if i > 0:
+        levels = {"judas_pd": (g.high[i - 1].max(), g.low[i - 1].min(), 0),
+                  "judas_or": (H5[:3].max(), L5[:3].min(), 3)}
+        for name, (hi, lo, j0) in levels.items():
+            done = False
+            for j in range(j0, 12):                               # sweep bar in the first hour
+                for k in range(j, min(j + 4, 17)):
+                    if L5[j] < lo and C5[k] > lo and C5[k] > H5[j]:
+                        add(name, 1, 5 * k + 5)
+                        done = True
+                    elif H5[j] > hi and C5[k] < hi and C5[k] < L5[j]:
+                        add(name, -1, 5 * k + 5)
+                        done = True
+                    if done:
+                        break
+                if done:
+                    break
+
+    # opening-range retest
+    orh, orl = H5[:3].max(), L5[:3].min()
+    for j in range(3, 17):
+        s = 1 if C5[j] > orh else (-1 if C5[j] < orl else 0)
+        if s:
+            edge = orh if s > 0 else orl
+            for t in range(5 * j + 5, ICT_END):
+                if (s > 0 and L[t] <= edge * 1.0005 and C[t] > edge) or (s < 0 and H[t] >= edge * 0.9995 and C[t] < edge):
+                    add("orb_retest", s, t + 1)
+                    break
+            break
+
+    # first pullback after the opening drive
+    sig = float(ctx_row["vol20_prev"]) if ctx_row is not None and ctx_row.get("vol20_prev") == ctx_row.get("vol20_prev") \
+        else None
+    if sig:
+        drive = C[14] / o - 1
+        s = 1 if drive >= 0.4 * sig else (-1 if drive <= -0.4 * sig else 0)
+        if s:
+            ext = H[:15].max() if s > 0 else L[:15].min()
+            pulled = False
+            far = ext
+            for t in range(15, ICT_END - 1):
+                if s > 0:
+                    far = min(far, L[t])
+                    if ext - far >= 0.3 * (ext - o) and L[t] > V[t]:
+                        pulled = True
+                    if pulled and C[t] > ext:
+                        add("first_pull", 1, t + 1)
+                        break
+                    if L[t] <= V[t]:
+                        break                                     # lost VWAP: no longer a clean pullback
+                else:
+                    far = max(far, H[t])
+                    if far - ext >= 0.3 * (o - ext) and H[t] < V[t]:
+                        pulled = True
+                    if pulled and C[t] < ext:
+                        add("first_pull", -1, t + 1)
+                        break
+                    if H[t] >= V[t]:
+                        break
     return out
 
 
 SETUPS = ["orb5", "orb15", "orb30", "vwap10", "vwap_cross", "vwap_pull", "noise",
-          "gap_go", "gap_fade", "pdh", "momo_1030", "rsi_dip"]
+          "gap_go", "gap_fade", "pdh", "momo_1030", "rsi_dip",
+          "silver_bullet", "judas_pd", "judas_or", "orb_retest", "first_pull"]
 
 
 def all_signals(grids: dict[str, ix.DayGrid], ctx: dict) -> dict[str, list[Signal]]:

@@ -46,3 +46,25 @@ def test_orb5_direction():
     _, sigs = _sigs(bars)
     orb = [s for s in sigs if s.strategy == "orb5"]
     assert orb and orb[0].direction == "long" and orb[0].m_in == 5
+
+
+def test_first_pullback_and_orb_retest_shapes():
+    import numpy as np
+    from tests.helpers import bars_from
+    bars = make_days(30, seed=2, vol=0.03)
+    last = bars.index.date[-1]
+    day = bars[bars.index.date == last]
+    p0 = float(day["open"].iloc[0])
+    path = np.concatenate([np.linspace(p0, p0 * 1.006, 15),        # drive up 0.6% by 9:45
+                           np.linspace(p0 * 1.006, p0 * 1.0040, 5),   # quick 33% pullback, above VWAP
+                           np.linspace(p0 * 1.0040, p0 * 1.009, 40),  # new high of day
+                           np.full(330, p0 * 1.009)])
+    rows = [(a, max(a, b) + 0.005, min(a, b) - 0.005, b, 1000) for a, b in zip(np.r_[p0, path[:-1]], path)]
+    new = bars_from(rows, f"{last} 09:30")
+    bars = bars[bars.index.date != last]
+    import pandas as pd
+    g = ix.build_grid("QQQ", pd.concat([bars, new]))
+    ctx = om.daily_context(g)
+    sigs = {s.strategy: s for s in lib.day_signals(g, len(g.days) - 1, ctx.loc[g.days[-1]])}
+    assert "first_pull" in sigs and sigs["first_pull"].direction == "long"
+    assert 20 < sigs["first_pull"].m_in <= 60

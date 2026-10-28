@@ -49,3 +49,17 @@ def test_rejects_impossible_spread_price():
                                  ("C", 602): [(m, 1.47) for m in range(60)]}), DAY, ET)
     legs, cap = db.legs_for("ds2", 600.0, "long")
     assert db.prepare(ch, S, legs, 30, cap) is None
+
+
+def test_scale_out_plan():
+    debit = 1.0
+    #           +30%  +60%(half out)  +20%  -0% (BE stop)
+    value = np.array([1.3, 1.6, 1.2, 0.99, 3.0])
+    avg, held = db.run_plan(debit, value, 30, ("scale", 1.0, 0.25), None)
+    assert avg == pytest.approx(0.5 * 1.6 + 0.5 * 0.99) and held == 3
+    avg, held = db.run_plan(debit, np.array([1.3, 1.6, 2.1]), 30, ("scale", 1.0, 0.25), None)
+    assert avg == pytest.approx(0.5 * 1.6 + 0.5 * 2.1)
+    avg, held = db.run_plan(debit, np.array([0.9, 0.7, 2.0]), 30, ("scale", 1.0, 0.25), None)
+    assert avg == pytest.approx(0.7) and held == 1                     # stopped before the first target
+    avg, _ = db.run_plan(debit, np.array([1.2, 1.55, 0.6]), 30, ("fixed", 0.5, 0.25), None)
+    assert avg == pytest.approx(1.55)

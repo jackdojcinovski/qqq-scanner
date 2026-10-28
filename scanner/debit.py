@@ -87,3 +87,41 @@ def exit_on(debit: float, value: np.ndarray, m: int, tp: float | None, sl: float
     if jt < end:
         return int(jt), "target"
     return end - 1, "time" if end < n else "close"
+
+
+# ------------------------------------------------------------------ trade plans
+# ("fixed", tp, sl)       all out at +tp or -sl (or the time limit)
+# ("scale", tp2, sl)      half out at +50%, stop on the rest moves to breakeven, rest out at +tp2 (None = ride)
+
+def plans() -> list[tuple]:
+    out = [("fixed", tp, sl) for tp in (0.3, 0.5, 0.75, 1.0, 1.5) for sl in (0.2, 0.25, 0.35, 0.5)]
+    out += [("scale", tp2, sl) for tp2 in (1.0, 1.5, None) for sl in (0.25, 0.35)]
+    return out
+
+
+def plan_label(p: tuple) -> str:
+    kind, tp, sl = p
+    if kind == "fixed":
+        return f"+{tp:.0%} / -{sl:.0%}"
+    return f"half +50%, rest {'ride' if tp is None else f'+{tp:.0%}'} (BE stop) / -{sl:.0%}"
+
+
+def run_plan(debit: float, value: np.ndarray, m: int, plan: tuple, time_bar: int | None,
+             fresh: np.ndarray | None = None) -> tuple[float, int]:
+    """(average price received per unit, minutes held until fully out)."""
+    kind, tp, sl = plan
+    if kind == "fixed":
+        j, _ = exit_on(debit, value, m, tp, sl, time_bar, fresh)
+        return float(value[j]), j
+    j1, why = exit_on(debit, value, m, 0.5, sl, time_bar, fresh)
+    if why != "target":
+        return float(value[j1]), j1                         # stopped or timed out before +50%: all out
+    first = float(value[j1])
+    rest_v = value[j1 + 1:]
+    if len(rest_v) == 0:
+        return first, j1
+    rest_f = fresh[j1 + 1:] if fresh is not None else None
+    tb = None if time_bar is None else time_bar
+    # breakeven stop on the remainder: sl such that debit*(1 - sl) == debit -> sl = 0
+    j2, _ = exit_on(debit, rest_v, m + j1 + 1, tp, 0.0, tb, rest_f)
+    return 0.5 * first + 0.5 * float(rest_v[j2]), j1 + 1 + j2
