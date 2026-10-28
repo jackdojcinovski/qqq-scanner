@@ -64,6 +64,10 @@ Forex Factory red-folder (high-impact USD) news days.
   LESS than intrinsic, so debit spreads were overstated (and credit-spread buy-backs overstated = credit study too
   pessimistic). FIX: floor each LEG at its own intrinsic (debit.py + spreads.py). Rerun morning_study + credit_study.
   Single-leg (trustworthy) results v3: no setup robust; top tune configs (vwap10 atm/itm2) lost ~-$250/wk on check.
+- v4 RESULT (after leg-floor fix): coin loses with EVERY structure (atm -65/-95, itm2 +5/-56, ds2 -99/-168/wk) ->
+  test is honest. Real setups: atm avg -$42/-$115/wk, ds2 -$93/-$164; settings profitable AND beating coin in both
+  periods: 248 of 13,200 (~2%, chance level). Combined model check: -$64/wk, 33% win. Credit spreads after fix:
+  still lose (check: 0-4% of settings profitable). VERDICT: no edge in 9:30-11:00 0DTE from these price/volume setups.
 - Unverified: old buyer study (12:00 time stop) showed ds2 +$1.8k/wk tune and check - likely stale-print bias; rerun.
 
 ## REBUILD (Oct 27, Jack's direction) - history
