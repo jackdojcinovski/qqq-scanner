@@ -53,6 +53,10 @@ Forex Factory red-folder (high-impact USD) news days.
   (sweep of PDH/PDL or OR15 then reclaim + MSS), orb_retest, first_pull (opening drive -> pullback holding VWAP -> HOD).
 - Bias guards: debit spreads must cost 20-90% of width; spread TP only counts when both legs traded within 2 min;
   max 50 contracts; reports show median and total without best 5 days. If the coin control profits, distrust it.
+- MORNING STUDY v2 RESULT (reports/morning_2026-10-27.md): coin control was PROFITABLE (+$156/wk tune, +$183 check)
+  -> test was flattering itself. ds2 (debit spreads) profitable in 97% of settings, atm ~ -$4/-72/wk: spread leg
+  prices look biased (off-market / mismatched leg prints). Fixes: take-profits fill AT the target (not minute
+  close); every setup now scored vs the coin traded the same way (edge per trade); coin shown per structure.
 - Unverified: old buyer study (12:00 time stop) showed ds2 +$1.8k/wk tune and check - likely stale-print bias; rerun.
 
 ## REBUILD (Oct 27, Jack's direction) - history

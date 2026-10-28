@@ -112,11 +112,12 @@ def run_plan(debit: float, value: np.ndarray, m: int, plan: tuple, time_bar: int
     kind, tp, sl = plan
     if kind == "fixed":
         j, why = exit_on(debit, value, m, tp, sl, time_bar, fresh)
-        return float(value[j]), j, why
+        # a resting limit order fills AT the target, not at wherever the minute happened to close
+        return (debit * (1 + tp) if why == "target" else float(value[j])), j, why
     j1, why = exit_on(debit, value, m, 0.5, sl, time_bar, fresh)
     if why != "target":
         return float(value[j1]), j1, why                    # stopped or timed out before +50%: all out
-    first = float(value[j1])
+    first = debit * 1.5
     rest_v = value[j1 + 1:]
     if len(rest_v) == 0:
         return first, j1, "target"
@@ -125,4 +126,5 @@ def run_plan(debit: float, value: np.ndarray, m: int, plan: tuple, time_bar: int
     # breakeven stop on the remainder: sl such that debit*(1 - sl) == debit -> sl = 0
     j2, why2 = exit_on(debit, rest_v, m + j1 + 1, tp, 0.0, tb, rest_f)
     rest = {"stop": "breakeven", "target": "target 2", "time": "time", "close": "time"}[why2]
-    return 0.5 * first + 0.5 * float(rest_v[j2]), j1 + 1 + j2, f"half +50%, rest {rest}"
+    second = debit * (1 + tp) if why2 == "target" else float(rest_v[j2])
+    return 0.5 * first + 0.5 * second, j1 + 1 + j2, f"half +50%, rest {rest}"

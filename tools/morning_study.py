@@ -278,7 +278,17 @@ def main() -> None:
         results.append(((setup, mode, st, lab, hold), ts, cs, rows, cols))
     real = [r for r in results if r[0][0] != "coin" and r[1]["n"] >= args.min_trades]
     coin = [r for r in results if r[0][0] == "coin" and r[1]["n"] >= args.min_trades]
-    ranked = sorted(real, key=lambda r: r[1]["lo"] * r[1]["wk"], reverse=True)
+    coin_by = {r[0][1:]: r for r in results if r[0][0] == "coin"}
+
+    def edge(r, part):
+        """$ per trade better than a coin flip traded the SAME way (same sides rule, contract, plan, hold)."""
+        c = coin_by.get(r[0][1:])
+        if c is None or c[part]["n"] < 20:
+            return -1e9
+        return r[part]["per"] - c[part]["per"]
+
+    # rank on tune by: beats the coin per trade, times how often it trades; must also make money itself
+    ranked = sorted([r for r in real if r[1]["per"] > 0], key=lambda r: edge(r, 1) * r[1]["wk"], reverse=True)
 
     def lab(key):
         setup, mode, st, plan, hold = key
@@ -308,7 +318,18 @@ def main() -> None:
               f"- Average over {len(coin)} coin settings: tune ${np.mean([r[1]['usd_wk'] for r in coin]):+,.0f}/week, "
               f"check ${np.mean([r[2]['usd_wk'] for r in coin]):+,.0f}/week; profitable on both: {both} of {len(coin)}.",
               "- " + ("OK: no edge from randomness, the test isn't flattering itself." if both <= 0.05 * len(coin) else
-                      "WARNING: coin flips look profitable too often - treat every result below with suspicion.") + "\n"]
+                      "WARNING: coin flips look profitable too often - some of the profit below is the test, not the "
+                      "setup. That's why every setup is also scored against the coin traded the same way.") + "\n",
+              "| how bought | coin settings | coin tune avg $/week | coin check avg $/week | coin profitable on both |",
+              "|---|---|---|---|---|"]
+        for st in STRUCTS:
+            cs_ = [r for r in coin if r[0][2] == st]
+            if cs_:
+                L.append(f"| {st} | {len(cs_)} | ${np.mean([r[1]['usd_wk'] for r in cs_]):+,.0f} "
+                         f"| ${np.mean([r[2]['usd_wk'] for r in cs_]):+,.0f} "
+                         f"| {sum(1 for r in cs_ if r[1]['usd_wk'] > 0 and r[2]['usd_wk'] > 0)} |")
+        L.append("\nIf the coin makes money with one way of buying, prices for that way are flattering it: "
+                 "don't trust that way of buying on its own.\n")
 
     def compare(title, fn, values):
         out = [f"## {title} (average over every other setting)\n",
@@ -329,16 +350,22 @@ def main() -> None:
     L += compare("Trade plan (target / stop)", lambda k: k[3], plan_names)
     L += compare("Max hold", lambda k: k[4], HOLDS)
 
-    L += ["## Top 15 on tune, and the same settings on the unseen CHECK year\n", HEAD, SEP]
-    for key, ts, cs, *_ in ranked[:15]:
-        L.append(line(lab(key), ts))
-        L.append(line("check: " + lab(key), cs, bold=True))
+    L += ["## Top 15 on tune (beats the coin by the most), and the same settings on the unseen CHECK year\n",
+          "The 'vs coin' numbers: $ per trade better than a coin flip traded exactly the same way.\n", HEAD, SEP]
+    for r in ranked[:15]:
+        key, ts, cs = r[0], r[1], r[2]
+        L.append(line(lab(key) + f" (vs coin {edge(r, 1):+,.0f}/trade)", ts))
+        L.append(line("check: " + lab(key) + f" (vs coin {edge(r, 2):+,.0f}/trade)", cs, bold=True))
+    both_beat = [r for r in real if edge(r, 1) > 0 and edge(r, 2) > 0 and r[1]["per"] > 0 and r[2]["per"] > 0]
+    L.append(f"\nSettings that make money AND beat the coin on both tune and check: {len(both_beat)} of {len(real)}.")
+    for st in STRUCTS:
+        L.append(f"- {st}: {sum(1 for r in both_beat if r[0][2] == st)}")
 
     # combined model: best settings per entry setup (tune), first signal of the day wins
     best = {}
     for r in ranked:
         best.setdefault(r[0][0], r)
-    keep = [r for r in best.values() if r[1]["per"] > 0]
+    keep = [r for r in best.values() if r[1]["per"] > 0 and edge(r, 1) > 0]
     L.append("\n## Combined model: best settings per entry setup (chosen on tune), first signal of the day wins\n")
     if keep:
         picks: dict = {}

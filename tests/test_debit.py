@@ -56,10 +56,10 @@ def test_scale_out_plan():
     #           +30%  +60%(half out)  +20%  -0% (BE stop)
     value = np.array([1.3, 1.6, 1.2, 0.99, 3.0])
     avg, held, why = db.run_plan(debit, value, 30, ("scale", 1.0, 0.25), None)
-    assert avg == pytest.approx(0.5 * 1.6 + 0.5 * 0.99) and held == 3 and why == "half +50%, rest breakeven"
+    assert avg == pytest.approx(0.5 * 1.5 + 0.5 * 0.99) and held == 3 and why == "half +50%, rest breakeven"
     avg, held, why = db.run_plan(debit, np.array([1.3, 1.6, 2.1]), 30, ("scale", 1.0, 0.25), None)
-    assert avg == pytest.approx(0.5 * 1.6 + 0.5 * 2.1) and why == "half +50%, rest target 2"
+    assert avg == pytest.approx(0.5 * 1.5 + 0.5 * 2.0) and why == "half +50%, rest target 2"   # fills AT targets
     avg, held, why = db.run_plan(debit, np.array([0.9, 0.7, 2.0]), 30, ("scale", 1.0, 0.25), None)
     assert avg == pytest.approx(0.7) and held == 1 and why == "stop"   # stopped before the first target
     avg, _, why = db.run_plan(debit, np.array([1.2, 1.55, 0.6]), 30, ("fixed", 0.5, 0.25), None)
-    assert avg == pytest.approx(1.55) and why == "target"
+    assert avg == pytest.approx(1.5) and why == "target"
