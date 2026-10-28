@@ -40,6 +40,8 @@ Forex Factory red-folder (high-impact USD) news days.
   bar, fill next open) + `tools/strategy_study.py` + `option_check.py --strategy NAME`.
 
 ## JACK'S STRATEGY SPEC (Oct 27, firm - build every test around this)
+- CONTRACT: plain 0DTE calls/puts at the money ONLY. No debit/credit spreads, no ITM variants (Jack, Oct 27).
+- The coin-flip is a CONTROL only (never traded) - explain it as a lie detector for the backtest.
 - Enter 9:30-11:00 ONLY. Hold no longer than 60-90 minutes ("hot potato" - limit premium decay).
 - Stop at most -50% of premium (test -25/-35/-50). Looking for LARGE moves: what causes them decides entries.
 - ~1 trade a day, ~$1,000 per trade, QQQ/SPY 0DTE. Results in dollars, real option prices.
