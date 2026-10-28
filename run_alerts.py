@@ -1,13 +1,16 @@
-"""Live TEST alerts for today: QQQ 5-minute opening-range breakout with a plain 0DTE call/put.
+"""Live alerts for today: scans QQQ 9:30-11:00 for the common day-trading setups, alerts ONE 0DTE trade.
 
     python run_alerts.py --check          # tonight: checks your keys, data, option quotes and Discord
     python run_alerts.py --replay 2026-10-23   # replay a past day from downloaded data (prints, no Discord)
     python run_alerts.py                  # tomorrow morning: start any time before 9:30 ET and leave it running
     python run_alerts.py --dry-run        # live data, but print messages instead of posting to Discord
 
-Rules: 9:35 direction of the first 5-minute candle -> at-the-money 0DTE call (green) or put (red),
-~$1,000, +50% take profit, -35% stop, out within 90 minutes, no trade on red-folder news days.
-It posts the entry, watches the option every 5 seconds, posts the exit briefing, then quits.
+Setups: opening-range breakout, VWAP reclaim, VWAP pullback bounce, flag breakout, yesterday's high/low
+break, 9/20 EMA cross - only when price is on the right side of VWAP and 4 of 5 confirmations agree
+(VWAP, 9/20 EMA curl, volume vs normal, volume spike, vs today's open). See scanner/day_setups.py.
+Trade: at-the-money 0DTE call/put, ~$1,000, +50% / -35% (strong setups +100% / -25%), out within 90 min,
+no trade on red-folder days. Posts the entry, watches the option every 5 s, posts the exit and a
+recap with running totals. Every day is logged to journal/trades.csv.
 """
 from __future__ import annotations
 
@@ -23,6 +26,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from scanner import live_day as ld  # noqa: E402
 from scanner import orb_alert as oa  # noqa: E402
 from scanner.config import ROOT, load_config  # noqa: E402
 from scanner.discord import Notifier  # noqa: E402
@@ -103,11 +107,7 @@ def main() -> None:
     p.add_argument("--replay", help="YYYY-MM-DD: replay a past day from downloaded data")
     p.add_argument("--symbol", default="QQQ")
     p.add_argument("--budget", type=float, default=1000.0)
-    p.add_argument("--tp", type=float, default=0.50)
-    p.add_argument("--sl", type=float, default=0.35)
-    p.add_argument("--hold", type=int, default=90)
     args = p.parse_args()
-    plan = oa.Plan(budget=args.budget, take_profit=args.tp, stop_loss=args.sl, max_hold_min=args.hold)
 
     (ROOT / "data").mkdir(exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
@@ -120,7 +120,8 @@ def main() -> None:
         if stock.empty or not f.exists():
             raise SystemExit("Need data/history and data/options for that day (download_history / download_chains).")
         api = oa.ReplayAPI(d, stock, pd.read_csv(f))
-        print(oa.run_day(api, PrintNotifier().send, args.symbol, plan, news_ok=True, log=print))
+        print(ld.run_day(api, PrintNotifier().send, args.symbol, journal=ROOT / "data" / "replay_journal.csv",
+                         budget=args.budget, log=print))
         return
 
     load_dotenv(ROOT / ".env")
@@ -158,7 +159,8 @@ def main() -> None:
     keep_awake(True)
     try:
         events, avail = news_today(load_config(), api.now().date())
-        result = oa.run_day(api, notify, args.symbol, plan, news_events=events, news_ok=avail, log=log.info)
+        result = ld.run_day(api, notify, args.symbol, news_events=events, news_ok=avail,
+                            journal=ROOT / "journal" / "trades.csv", budget=args.budget, log=log.info)
         log.info("done: %s", result)
     finally:
         keep_awake(False)

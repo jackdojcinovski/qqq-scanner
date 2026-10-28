@@ -39,7 +39,15 @@ Forex Factory red-folder (high-impact USD) news days.
 - New: `scanner/intraday.py` (noise-boundary, last-half-hour, VWAP trend; 1/day, decide on a closed
   bar, fill next open) + `tools/strategy_study.py` + `option_check.py --strategy NAME`.
 
-## LIVE TEST ALERTS (from Oct 28, 2026)
+## LIVE ALERTS v2 (Jack, Oct 27 night: "fuck the backtesting", use common day-trading setups)
+- `run_alerts.py` -> `scanner/live_day.py` + `scanner/day_setups.py`: every closed 1-min candle 9:35-11:00:
+  triggers orb_break (OR15), vwap_reclaim, vwap_bounce, hod_break (flag), pdh_break, ema_cross (9/20); needs right
+  side of VWAP + >=4/5 confirmations (VWAP, 9/20 EMA curl, rvol>=1.2, trigger-candle vol>=1.5x, vs open).
+  ATM 0DTE, ~$1,000, +50%/-35% (5/5 and rvol>=1.5: +100%/-25%), out within 90 min, 1 trade/day, red-folder = skip.
+  Journal: journal/trades.csv (commit it) + Discord daily recap with week/all-time totals.
+- Old (superseded) v1: 9:35 candle-direction ORB in scanner/orb_alert.py (ReplayAPI/Quote/embed still used).
+
+## LIVE TEST ALERTS v1 (from Oct 28, 2026)
 - `run_alerts.py` + `scanner/orb_alert.py`: QQQ 5-min ORB -> ATM 0DTE call (green 9:30-9:34 candle) / put (red),
   doji = no trade, ~$1,000, TP +50% / SL -35% on the option's bid, out by entry+90 min, no trade on red-folder days.
   Polls IEX latest bar + Alpaca INDICATIVE option quotes (real-time on free plan). Posts entry, exit briefing.
