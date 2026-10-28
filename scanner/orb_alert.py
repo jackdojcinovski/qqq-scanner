@@ -329,3 +329,20 @@ class ReplayAPI:
     def history(self, symbol: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
         s = self.stock
         return s[(s.index >= start) & (s.index < end)]
+
+
+class FetchingReplayAPI(ReplayAPI):
+    """ReplayAPI that downloads each option's minute bars the first time it's asked for (for replaying today)."""
+
+    def __init__(self, day: date, stock: pd.DataFrame, fetch_option, half_spread: float = 0.01):
+        super().__init__(day, stock, pd.DataFrame(columns=["symbol", "timestamp", "close"]), half_spread=half_spread)
+        self._fetch = fetch_option            # occ -> pd.Series of closes indexed by ET timestamps (or None)
+        self._tried: set = set()
+
+    def option_quote(self, occ_sym: str) -> Quote | None:
+        if occ_sym not in self.opt and occ_sym not in self._tried:
+            self._tried.add(occ_sym)
+            s = self._fetch(occ_sym)
+            if s is not None and len(s):
+                self.opt[occ_sym] = s.sort_index()
+        return super().option_quote(occ_sym)

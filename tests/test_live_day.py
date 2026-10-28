@@ -66,3 +66,21 @@ def test_evaluate_needs_vwap_side_and_four_confirmations():
     assert sigs and all(s.direction == "long" and s.confirms["vwap"] and s.score >= 4 for s in sigs)
     down = C[:m][::-1].copy()
     assert not [x for x in ds.evaluate(O[:m], H[:m], L[:m], down, V[:m], ctx) if x.direction == "long"]
+
+
+def test_fetching_replay_downloads_the_contract_it_needs(tmp_path):
+    d, bars, chain, _ = setup_day(trend_path, lambda m: 2.0)
+    t = bars.index[bars.index.date == d]
+    bars.loc[t[15:60], "volume"] *= 4
+    asked = []
+
+    def fetch(occ):
+        asked.append(occ)
+        idx = pd.date_range(oa.at(d, 9, 30), periods=390, freq="1min")
+        return pd.Series(np.r_[np.full(30, 2.0), np.full(360, 3.5)], index=idx)
+
+    api = oa.FetchingReplayAPI(d, bars, fetch)
+    sent = []
+    res = ld.run_day(api, lambda c, e: sent.append(e[0]), "QQQ", journal=tmp_path / "s.csv", log=lambda *a: None)
+    assert res["status"] == "traded" and len(asked) == 1
+    assert any(e["title"].startswith("ENTER") for e in sent) and sent[-1]["title"] == "Daily recap"

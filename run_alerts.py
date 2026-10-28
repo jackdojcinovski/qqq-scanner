@@ -4,6 +4,8 @@
     python run_alerts.py --replay 2026-10-23   # replay a past day from downloaded data (prints, no Discord)
     python run_alerts.py                  # tomorrow morning: start any time before 9:30 ET and leave it running
     python run_alerts.py --dry-run        # live data, but print messages instead of posting to Discord
+    python run_alerts.py --sim            # after the fact: replay TODAY's real data and post it to Discord as a SIMULATION
+    python run_alerts.py --sim --ignore-news   # same, but show the trade even on a red-folder news day
 
 Setups: opening-range breakout, VWAP reclaim, VWAP pullback bounce, flag breakout, yesterday's high/low
 break, 9/20 EMA cross - only when price is on the right side of VWAP and 4 of 5 confirmations agree
@@ -100,11 +102,56 @@ def news_today(cfg, day: date) -> tuple[list[str], bool]:
     return [f"{e.when:%H:%M} {e.title}" for e in nf.day_events(day)], nf.available
 
 
+def option_series(api: "LiveAPI", day: date):
+    """occ -> minute closes for `day` from Alpaca's historical option bars."""
+    from alpaca.data.requests import OptionBarsRequest
+    from alpaca.data.timeframe import TimeFrame
+
+    def fetch(occ: str):
+        try:
+            df = api.a.options.get_option_bars(OptionBarsRequest(
+                symbol_or_symbols=occ, timeframe=TimeFrame.Minute,
+                start=oa.at(day, 9, 30).to_pydatetime(), end=oa.at(day, 16, 0).to_pydatetime())).df
+        except Exception as exc:                                    # noqa: BLE001
+            log.warning("option bars failed for %s: %s", occ, exc)
+            return None
+        if df is None or df.empty:
+            return None
+        df = df.xs(occ, level="symbol") if "symbol" in df.index.names else df
+        return pd.Series(df["close"].to_numpy(), index=pd.to_datetime(df.index).tz_convert(ET))
+    return fetch
+
+
+def run_sim(api: "LiveAPI", notify, args) -> None:
+    day = api.now().date() if args.sim == "today" else date.fromisoformat(args.sim)
+    end = min(oa.at(day, 16, 0), api.now() - pd.Timedelta(minutes=16))     # free plan: nothing newer than 15 min
+    if end < oa.at(day, 11, 0):
+        raise SystemExit("Too early - wait until about 11:16 ET so the 9:30-11:00 data is available.")
+    stock = api.history(args.symbol, oa.at(day, 4, 0) - pd.Timedelta(days=35), end)
+    if stock.empty or stock[stock.index.date == day].empty:
+        raise SystemExit(f"No {args.symbol} data for {day}.")
+    sim = oa.FetchingReplayAPI(day, stock, option_series(api, day))
+    events, avail = ([], True) if args.ignore_news else news_today(load_config(), day)
+
+    def sim_notify(content="", embeds=None):
+        for e in embeds or []:
+            e["title"] = "SIMULATION - " + e.get("title", "")
+            e["footer"] = {"text": f"Replayed on {pd.Timestamp.now(tz=ET):%b %d %H:%M} ET from today's real data. "
+                                   "Not a live alert."}
+        return notify(content, embeds)
+
+    result = ld.run_day(sim, sim_notify, args.symbol, news_events=events, news_ok=avail,
+                        journal=ROOT / "journal" / "simulated.csv", budget=args.budget, log=log.info)
+    print(result)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--check", action="store_true", help="test keys, data, quotes and Discord, then exit")
     p.add_argument("--dry-run", action="store_true", help="print instead of posting to Discord")
     p.add_argument("--replay", help="YYYY-MM-DD: replay a past day from downloaded data")
+    p.add_argument("--sim", nargs="?", const="today", help="replay today (or YYYY-MM-DD) from Alpaca data, post to Discord")
+    p.add_argument("--ignore-news", action="store_true", help="with --sim: don't stand down on red-folder days")
     p.add_argument("--symbol", default="QQQ")
     p.add_argument("--budget", type=float, default=1000.0)
     args = p.parse_args()
@@ -130,6 +177,10 @@ def main() -> None:
         raise SystemExit("Fill ALPACA_API_KEY, ALPACA_API_SECRET and DISCORD_WEBHOOK_URL in .env")
     api = LiveAPI(key, secret)
     notify = PrintNotifier().send if args.dry_run else Notifier(hook, username="QQQ TEST alerts").send
+
+    if args.sim:
+        run_sim(api, notify, args)
+        return
 
     if args.check:
         ok = True
