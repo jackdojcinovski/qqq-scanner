@@ -110,6 +110,7 @@ def main() -> None:
     p.add_argument("--start", default="2024-02-05")
     p.add_argument("--budget", type=float, default=1000.0)
     p.add_argument("--slip", type=float, default=0.01, help="$ per leg per side")
+    p.add_argument("--fx", type=float, default=0.0, help="FX fee each way (0 = USD account; 0.015 = CAD account)")
     p.add_argument("--max-contracts", type=int, default=50)
     p.add_argument("--split")
     p.add_argument("--min-trades", type=int, default=60)
@@ -154,6 +155,7 @@ def main() -> None:
     groups = list(itertools.product(SETUPS, MODES, STRUCTS))
     gidx = {g: k for k, g in enumerate(groups)}
     rec_group, rec_day, rec_mask, rec_m, rec_big, pnl_rows, held_rows = [], [], [], [], [], [], []
+    rec_info, avg_rows, why_rows, rec_mv30, rec_r30 = [], [], [], [], []
     print(f"{len(have)} days with option data; {len(groups)} setup/side/contract groups x {len(PH)} plans ...")
     for n, d in enumerate(have, 1):
         chains = {}
@@ -190,11 +192,25 @@ def main() -> None:
             if mask < 0:
                 continue
             k_n = min(args.max_contracts, max(1, int(args.budget // (debit * 100))))
-            prow, hrow = [], []
+            prow, hrow, arow, wrow = [], [], [], []
             for pi, hold in PH:
-                avg, held = db.run_plan(debit, value, sig.m_in, PLANS[pi], sig.m_in + hold, fresh)
-                prow.append(k_n * 100 * (avg - debit))
+                avg, held, why = db.run_plan(debit, value, sig.m_in, PLANS[pi], sig.m_in + hold, fresh)
+                prow.append(k_n * 100 * ((avg - debit) - args.fx * (avg + debit)))
                 hrow.append(held)
+                arow.append(avg)
+                wrow.append(why)
+            g, i = grids[sig.symbol], pos[sig.symbol][d]
+            legs, cap = db.legs_for(st, float(g.close[i, sig.m_in - 1]), sig.direction)
+            rec_info.append((sig.symbol, sig.direction, st, [(lg.right, lg.strike, lg.short) for lg in legs], debit, k_n,
+                             len(legs)))
+            avg_rows.append(arow)
+            why_rows.append(wrow)
+            if len(value) > 30 and sig.m_in + 30 < ix.MINUTES:
+                rec_mv30.append(abs(g.close[i, sig.m_in + 30] / g.close[i, sig.m_in - 1] - 1))
+                rec_r30.append(float(value[30]) / debit - 1)
+            else:
+                rec_mv30.append(np.nan)
+                rec_r30.append(np.nan)
             rec_group.append(gidx[(setup, mode, st)])
             rec_day.append(d)
             rec_mask.append(mask)
@@ -211,6 +227,8 @@ def main() -> None:
     BIGM = np.array(rec_big)
     PNL = np.array(pnl_rows)
     HELD = np.array(held_rows)
+    AVG = np.array(avg_rows)
+    MV30, R30 = np.array(rec_mv30), np.array(rec_r30)
     is_tune = np.array([d < split for d in D])
     ph_index = {ph: k for k, ph in enumerate(PH)}
     plan_index = {pl: k for k, pl in enumerate(PLANS)}
@@ -242,23 +260,22 @@ def main() -> None:
             continue
         for pi, hold in PH:
             col = ph_index[(pi, hold)]
-            configs.append(((setup, mode, st, db.plan_label(PLANS[pi]), hold), rows, PNL[rows, col], HELD[rows, col]))
+            configs.append(((setup, mode, st, db.plan_label(PLANS[pi]), hold), rows, np.full(len(rows), col)))
         for bp, basep, need in itertools.product(BIG_PLANS, BASE_PLANS, NEEDED):
             for hold in HOLDS:
                 cb = ph_index[(plan_index[bp], hold)]
                 cs = ph_index[(plan_index[basep], hold)]
-                big_rows = GRADE[rows] >= need
-                pnl = np.where(big_rows, PNL[rows, cb], PNL[rows, cs])
-                held = np.where(big_rows, HELD[rows, cb], HELD[rows, cs])
+                cols = np.where(GRADE[rows] >= need, cb, cs)
                 lab = f"ADAPTIVE: {need}+ signs -> {db.plan_label(bp)}, else {db.plan_label(basep)}"
-                configs.append(((setup, mode, st, lab, hold), rows, pnl, held))
+                configs.append(((setup, mode, st, lab, hold), rows, cols))
 
     results = []
-    for (setup, mode, st, lab, hold), rows, pnl, held in configs:
+    for (setup, mode, st, lab, hold), rows, cols in configs:
+        pnl, held = PNL[rows, cols], HELD[rows, cols]
         t = is_tune[rows]
         ts = stats(D[rows][t], pnl[t], held[t], len(tune_days))
         cs = stats(D[rows][~t], pnl[~t], held[~t], len(check_days))
-        results.append(((setup, mode, st, lab, hold), ts, cs, rows, pnl, held))
+        results.append(((setup, mode, st, lab, hold), ts, cs, rows, cols))
     real = [r for r in results if r[0][0] != "coin" and r[1]["n"] >= args.min_trades]
     coin = [r for r in results if r[0][0] == "coin" and r[1]["n"] >= args.min_trades]
     ranked = sorted(real, key=lambda r: r[1]["lo"] * r[1]["wk"], reverse=True)
@@ -326,10 +343,10 @@ def main() -> None:
     if keep:
         picks: dict = {}
         M_ARR = np.array(rec_m)
-        for key, ts, cs, rows, pnl, held in keep:
-            for rr, x, h in zip(rows, pnl, held):
+        for key, ts, cs, rows, cols in keep:
+            for rr, col in zip(rows, cols):
                 d = D[rr]
-                cand = (M_ARR[rr], x, h, key[0])
+                cand = (M_ARR[rr], PNL[rr, col], HELD[rr, col], key[0], rr, col)
                 if d not in picks or cand[0] < picks[d][0]:
                     picks[d] = cand
         days = sorted(picks)
@@ -349,6 +366,59 @@ def main() -> None:
             by_m.setdefault(f"{d:%Y-%m}", []).append(picks[d][1])
         L += ["", "| month | trades | $ |", "|---|---|---|"]
         L += [f"| {m} | {len(v)} | ${sum(v):+,.0f} |" for m, v in sorted(by_m.items())]
+        # ---- cost of trading, and the day-by-day trade log
+        flat_spread = {}
+        for st in STRUCTS:
+            sel = np.array([rec_info[r][2] == st for r in range(len(rec_info))]) & (MV30 < 0.0005)
+            sel &= ~np.isnan(R30)
+            if sel.sum() >= 20:
+                spread_frac = np.median([2 * args.slip * rec_info[r][6] / rec_info[r][4] for r in np.flatnonzero(sel)])
+                flat_spread[st] = (float(np.median(R30[sel])), float(spread_frac), int(sel.sum()))
+        L += ["\n## What a trade costs you (real prices)\n",
+              f"- Commission: $0 per contract (Wealthsimple ETF options). FX: {args.fx:.1%} each way "
+              "(0 with a USD account).",
+              f"- Spread / slippage: ${args.slip:.2f} per leg on the way in AND on the way out, on top of the traded price.",
+              "- Time decay is already inside the real option prices; the table estimates its size from trades where "
+              "QQQ/SPY went nowhere for 30 minutes.\n",
+              "| how bought | flat-price trades | lost in 30 min if price doesn't move (spread + decay) | of which spread "
+              "| of which time decay | decay per 10 min held |", "|---|---|---|---|---|---|"]
+        decay_rate = {}
+        for st, (r30, spf, nn) in flat_spread.items():
+            decay = max(0.0, -r30 - spf)
+            decay_rate[st] = decay / 30
+            L.append(f"| {st} | {nn} | {-r30:.1%} | {spf:.1%} | {decay:.1%} | {decay / 3:.1%} |")
+        log_rows = []
+        for d in days:
+            m_in, x, h, setup, rr, col = picks[d]
+            sym, direction, st, legs, debit, k_n, nlegs = rec_info[rr]
+            pi, hold = PH[col]
+            spread_cost = k_n * 100 * 2 * args.slip * nlegs
+            decay_cost = k_n * 100 * debit * decay_rate.get(st, 0.0) * h
+            t_in = (datetime(2000, 1, 1, 9, 30) + timedelta(minutes=int(m_in))).strftime("%H:%M")
+            t_out = (datetime(2000, 1, 1, 9, 30) + timedelta(minutes=int(m_in + h))).strftime("%H:%M")
+            opt = " / ".join(f"{'-' if sh else '+'}{int(k)}{r}" for r, k, sh in legs) + f" ({st})"
+            log_rows.append((d, sym, setup, direction, t_in, opt, k_n, debit, t_out, float(AVG[rr, col]),
+                             why_rows[rr][col], x, spread_cost, decay_cost, "check" if d >= split else "tune",
+                             db.plan_label(PLANS[pi])))
+        import csv
+        with open(ROOT / "reports" / "morning_trades.csv", "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["day", "symbol", "setup", "side", "entry", "option", "contracts", "paid", "exit", "sold",
+                        "how it ended", "pnl", "spread_cost", "decay_cost_est", "period", "plan"])
+            for r in log_rows:
+                w.writerow([r[0], r[1], r[2], r[3], r[4], r[5], r[6], f"{r[7]:.2f}", r[8], f"{r[9]:.2f}", r[10],
+                            f"{r[11]:.2f}", f"{r[12]:.2f}", f"{r[13]:.2f}", r[14], r[15]])
+        chk = [r for r in log_rows if r[14] == "check"]
+        if chk:
+            L += ["", f"Unseen year, per trade on average: spread/slippage ${np.mean([r[12] for r in chk]):,.0f}, "
+                  f"time decay (est.) ${np.mean([r[13] for r in chk]):,.0f}, result ${np.mean([r[11] for r in chk]):+,.0f}."]
+            L += ["\n## Every trade on the unseen year (one per day, exactly as it would have played out)\n",
+                  "| day | symbol | setup | side | in | option (+ bought, - sold) | contracts | paid | out | sold at "
+                  "| how it ended | $ result | spread cost | decay (est.) |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+            for r in chk:
+                L.append(f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]} | {r[5]} | {r[6]} | {r[7]:.2f} | {r[8]} | {r[9]:.2f} "
+                         f"| {r[10]} | ${r[11]:+,.0f} | ${r[12]:,.0f} | ${r[13]:,.0f} |")
+            L.append("\nAll trades (both periods) are in reports/morning_trades.csv.")
         L += ["\n## Bottom line\n",
               f"- Combined, tune: {ct['wk']:.2f} trades/week, win {ct['win']:.0%}, ${ct['per']:+,.0f}/trade, "
               f"**${ct['usd_wk']:+,.0f}/week**.",
