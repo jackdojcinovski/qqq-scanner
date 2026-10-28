@@ -117,9 +117,11 @@ def prepare(chain: Chain, S: np.ndarray, legs: list[Leg], m: int, width: float, 
         return None            # a credit near the width is impossible in a real market: stale / bad prints
     intr = np.vstack([_intrinsic(lg, S) for lg in legs])
     window = slice(m, exit_bar + 1)
-    mark = np.nansum(sign[:, None] * px[:, window], axis=0)
-    floor = np.sum(sign[:, None] * intr[:, window], axis=0)
-    cost = np.clip(np.maximum(mark, floor) + slip * len(legs), 0, width + slip * len(legs))
+    # floor each leg at its own intrinsic value (not the whole spread: an in-the-money vertical with time
+    # left is worth less than its net intrinsic, so a spread-level floor overstated the buy-back cost)
+    legpx = np.maximum(px[:, window], intr[:, window])
+    mark = np.nansum(sign[:, None] * legpx, axis=0)
+    cost = np.clip(mark + slip * len(legs), 0, width + slip * len(legs))
     return credit, cost
 
 

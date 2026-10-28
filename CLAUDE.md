@@ -57,6 +57,11 @@ Forex Factory red-folder (high-impact USD) news days.
   -> test was flattering itself. ds2 (debit spreads) profitable in 97% of settings, atm ~ -$4/-72/wk: spread leg
   prices look biased (off-market / mismatched leg prints). Fixes: take-profits fill AT the target (not minute
   close); every setup now scored vs the coin traded the same way (edge per trade); coin shown per structure.
+- v3 RESULT: coin per structure: atm -$65/-95/wk (correct), itm2 +5/-56, ds2 +$234/+339 -> ds2 pricing biased.
+  ROOT CAUSE found: spread value was floored at the spread's NET intrinsic; an ITM vertical with time left is worth
+  LESS than intrinsic, so debit spreads were overstated (and credit-spread buy-backs overstated = credit study too
+  pessimistic). FIX: floor each LEG at its own intrinsic (debit.py + spreads.py). Rerun morning_study + credit_study.
+  Single-leg (trustworthy) results v3: no setup robust; top tune configs (vwap10 atm/itm2) lost ~-$250/wk on check.
 - Unverified: old buyer study (12:00 time stop) showed ds2 +$1.8k/wk tune and check - likely stale-print bias; rerun.
 
 ## REBUILD (Oct 27, Jack's direction) - history

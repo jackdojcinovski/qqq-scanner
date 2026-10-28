@@ -59,9 +59,11 @@ def prepare_full(chain: Chain, S: np.ndarray, legs: list[Leg], m: int, cap: floa
         return None            # an at-the-money debit spread can't really cost <20% or >90% of its width
     intr = np.vstack([_intrinsic(lg, S) for lg in legs])
     w = slice(m, exit_bar + 1)
-    mark = np.sum(sign[:, None] * px[:, w], axis=0)
-    floor = np.sum(sign[:, None] * intr[:, w], axis=0)
-    value = np.maximum(mark, floor) - slip * len(legs)
+    # each LEG is worth at least its own intrinsic value (a stale print can't be below that) - floor legs one by
+    # one. Flooring the whole spread at its net intrinsic would be wrong: an in-the-money vertical with time left
+    # is worth LESS than its intrinsic value, so that floor flattered debit spreads.
+    legpx = np.maximum(px[:, w], intr[:, w])
+    value = np.sum(sign[:, None] * legpx, axis=0) - slip * len(legs)
     if cap is not None:
         value = np.minimum(value, cap - slip * len(legs))
     ages = np.vstack([chain.age[(lg.right, float(lg.strike))][w] for lg in legs])

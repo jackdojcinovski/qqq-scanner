@@ -63,3 +63,22 @@ def test_scale_out_plan():
     assert avg == pytest.approx(0.7) and held == 1 and why == "stop"   # stopped before the first target
     avg, _, why = db.run_plan(debit, np.array([1.2, 1.55, 0.6]), 30, ("fixed", 0.5, 0.25), None)
     assert avg == pytest.approx(1.5) and why == "target"
+
+
+def test_spread_between_strikes_is_not_floored_to_intrinsic():
+    # QQQ 601.5 between the 600 and 602 strikes: the 600/602 call spread has $1.50 intrinsic, but with time
+    # left it's really worth about long - short = 1.90 - 0.95 = 0.95. It must NOT be marked at 1.50.
+    S = np.full(390, 600.0)
+    S[40:] = 601.5
+    ch = sp.load_chain(chain_df({("C", 600): [(m, 1.5 if m < 40 else 1.9) for m in range(390)],
+                                 ("C", 602): [(m, 0.5 if m < 40 else 0.95) for m in range(390)]}), DAY, ET)
+    legs, cap = db.legs_for("ds2", 600.0, "long")
+    debit, value, fresh = db.prepare_full(ch, S, legs, 30, cap, slip=0.01)
+    assert value[20] == pytest.approx(1.9 - 0.95 - 0.02)
+    # but a leg's stale print below its own intrinsic value is lifted to intrinsic
+    S2 = np.full(390, 600.0)
+    S2[40:] = 605.0
+    ch2 = sp.load_chain(chain_df({("C", 600): [(m, 1.5) for m in range(390)],
+                                  ("C", 602): [(m, 0.5) for m in range(390)]}), DAY, ET)
+    _, v2, _ = db.prepare_full(ch2, S2, legs, 30, cap, slip=0.01)
+    assert v2[20] == pytest.approx(min(5.0 - 3.0, 2.0) - 0.02)
