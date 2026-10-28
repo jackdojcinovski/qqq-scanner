@@ -122,6 +122,31 @@ def option_series(api: "LiveAPI", day: date):
     return fetch
 
 
+def estimated_series(stock: pd.DataFrame, day: date):
+    """Fallback when Alpaca won't give today's real option prices: Black-Scholes on the real QQQ minute prices,
+    implied vol = 20-day realised vol x 1.6 (the factor that matched real 0DTE prices in our tests)."""
+    import math
+
+    import numpy as np
+
+    from scanner.optionsim import YEAR_MIN, bs_price
+    t = stock.index.time
+    from datetime import time as dtime
+    rth = stock[(t >= dtime(9, 30)) & (t < dtime(16, 0))]
+    daily = rth.groupby(rth.index.date)["close"].last()
+    rets = np.log(daily[daily.index < day]).diff().dropna().tail(20)
+    sigma = float(rets.std() * math.sqrt(252) * 1.6) if len(rets) > 5 else 0.25
+    today = rth[rth.index.date == day]
+
+    def make(occ: str):
+        right, strike = occ[-9], int(occ[-8:]) / 1000
+        close_ts = oa.at(day, 16, 0)
+        T = ((close_ts - (today.index + pd.Timedelta(minutes=1))).total_seconds() / 60 / YEAR_MIN).to_numpy()
+        px = bs_price(today["close"].to_numpy(), strike, T, sigma, right)
+        return pd.Series(np.round(px, 2), index=today.index)
+    return make
+
+
 def run_sim(api: "LiveAPI", notify, args) -> None:
     day = api.now().date() if args.sim == "today" else date.fromisoformat(args.sim)
     end = min(oa.at(day, 16, 0), api.now() - pd.Timedelta(minutes=16))     # free plan: nothing newer than 15 min
@@ -130,14 +155,26 @@ def run_sim(api: "LiveAPI", notify, args) -> None:
     stock = api.history(args.symbol, oa.at(day, 4, 0) - pd.Timedelta(days=35), end)
     if stock.empty or stock[stock.index.date == day].empty:
         raise SystemExit(f"No {args.symbol} data for {day}.")
-    sim = oa.FetchingReplayAPI(day, stock, option_series(api, day))
+    real_fetch, est_fetch = option_series(api, day), estimated_series(stock, day)
+    estimated = []
+
+    def fetch(occ: str):
+        got = real_fetch(occ)
+        if got is None or not len(got):
+            estimated.append(occ)
+            log.warning("using ESTIMATED option prices for %s (real option data not available)", occ)
+            return est_fetch(occ)
+        return got
+
+    sim = oa.FetchingReplayAPI(day, stock, fetch)
     events, avail = ([], True) if args.ignore_news else news_today(load_config(), day)
 
     def sim_notify(content="", embeds=None):
         for e in embeds or []:
             e["title"] = "SIMULATION - " + e.get("title", "")
-            e["footer"] = {"text": f"Replayed on {pd.Timestamp.now(tz=ET):%b %d %H:%M} ET from today's real data. "
-                                   "Not a live alert."}
+            e["footer"] = {"text": f"Replayed on {pd.Timestamp.now(tz=ET):%b %d %H:%M} ET from today's real QQQ data. "
+                                   + ("Option prices ESTIMATED (Alpaca didn't provide today's real option prices). "
+                                      if estimated else "") + "Not a live alert."}
         return notify(content, embeds)
 
     result = ld.run_day(sim, sim_notify, args.symbol, news_events=events, news_ok=avail,
