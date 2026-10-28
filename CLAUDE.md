@@ -39,6 +39,14 @@ Forex Factory red-folder (high-impact USD) news days.
 - New: `scanner/intraday.py` (noise-boundary, last-half-hour, VWAP trend; 1/day, decide on a closed
   bar, fill next open) + `tools/strategy_study.py` + `option_check.py --strategy NAME`.
 
+## JACK'S PREFERRED STRATEGY (Oct 27 - remember this; likely the main one going forward)
+- Trend pullback on HEAVY-VOLUME mornings only: QQQ trading unusually high volume early (rvol >= ~1.5x),
+  price holding one side of VWAP with the 9 EMA curling the same way -> buy the FIRST pullback to VWAP or the
+  20 EMA that bounces (ATM 0DTE). Normal-volume days: sit out. Basis: stocks-in-play / relative-volume research
+  (ORB Sharpe 0.48 -> 2.81 with the RVOL filter) and our own stock data (big move within the hour 41% with heavy
+  volume vs 27% without). Jack may size it a bit above $1,000. Not yet the live default: v2 below runs tomorrow;
+  switching = require rvol>=1.5 and limit triggers to vwap_bounce (+ orb_break) in scanner/day_setups.py.
+
 ## LIVE ALERTS v2 (Jack, Oct 27 night: "fuck the backtesting", use common day-trading setups)
 - `run_alerts.py` -> `scanner/live_day.py` + `scanner/day_setups.py`: every closed 1-min candle 9:35-11:00:
   triggers orb_break (OR15), vwap_reclaim, vwap_bounce, hod_break (flag), pdh_break, ema_cross (9/20); needs right
