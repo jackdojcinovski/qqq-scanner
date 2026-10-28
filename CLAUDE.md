@@ -39,6 +39,13 @@ Forex Factory red-folder (high-impact USD) news days.
 - New: `scanner/intraday.py` (noise-boundary, last-half-hour, VWAP trend; 1/day, decide on a closed
   bar, fill next open) + `tools/strategy_study.py` + `option_check.py --strategy NAME`.
 
+## LIVE TEST ALERTS (from Oct 28, 2026)
+- `run_alerts.py` + `scanner/orb_alert.py`: QQQ 5-min ORB -> ATM 0DTE call (green 9:30-9:34 candle) / put (red),
+  doji = no trade, ~$1,000, TP +50% / SL -35% on the option's bid, out by entry+90 min, no trade on red-folder days.
+  Polls IEX latest bar + Alpaca INDICATIVE option quotes (real-time on free plan). Posts entry, exit briefing.
+  `--check` (keys/data/quotes/Discord), `--replay YYYY-MM-DD` (past day from data/), `--dry-run`.
+  Labelled TEST: no backtested edge. Old ICT scanner (run_scanner.py / scheduled task "QQQ Scanner") should be off.
+
 ## JACK'S STRATEGY SPEC (Oct 27, firm - build every test around this)
 - CONTRACT: plain 0DTE calls/puts at the money ONLY. No debit/credit spreads, no ITM variants (Jack, Oct 27).
 - The coin-flip is a CONTROL only (never traded) - explain it as a lie detector for the backtest.
